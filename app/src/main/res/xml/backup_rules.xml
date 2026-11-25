@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<full-backup-content>
+    <!-- Exclude local AES-256 encrypted vault & keystore preferences from Android Auto Backup
+         so credentials never leave the device and cannot trigger AEAD keystore restore crashes. -->
+    <exclude domain="sharedpref" path="swiftweb_encrypted_passwords.xml" />
+    <exclude domain="sharedpref" path="swiftweb_encrypted_passwords_test_fallback.xml" />
+</full-backup-content>

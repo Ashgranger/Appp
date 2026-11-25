@@ -1,0 +1,179 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Default deny: all unmatched paths are rejected by default
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helper Functions ---
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isNonEmptyString(val, maxLen) {
+      return val is string && val.size() >= 1 && val.size() <= maxLen;
+    }
+
+    function isBoundedString(val, maxLen) {
+      return val is string && val.size() <= maxLen;
+    }
+
+    function isValidServerTimestamp(ts) {
+      return ts is timestamp && ts <= request.time;
+    }
+
+    // --- Domain Validators ---
+
+    function isValidUserProfile(data, userId) {
+      return data.userId == userId
+        && isBoundedString(data.displayName, 120)
+        && isBoundedString(data.email, 254)
+        && (!('photoUrl' in data) || isBoundedString(data.photoUrl, 1024))
+        && isValidServerTimestamp(data.createdAt)
+        && isValidServerTimestamp(data.updatedAt);
+    }
+
+    function isValidBookmark(data, userId) {
+      return data.userId == userId
+        && isNonEmptyString(data.title, 300)
+        && isNonEmptyString(data.url, 2048)
+        && isNonEmptyString(data.folder, 80)
+        && data.speedDial is bool
+        && isValidServerTimestamp(data.createdAt)
+        && isValidServerTimestamp(data.updatedAt);
+    }
+
+    function isValidHistoryEntry(data, userId) {
+      return data.userId == userId
+        && isNonEmptyString(data.title, 300)
+        && isNonEmptyString(data.url, 2048)
+        && isValidServerTimestamp(data.visitedAt);
+    }
+
+    function isValidSearchEngine(data, userId) {
+      return data.userId == userId
+        && isNonEmptyString(data.name, 80)
+        && isNonEmptyString(data.searchUrlTemplate, 2048)
+        && isValidServerTimestamp(data.createdAt);
+    }
+
+    function isValidAllowlistHost(data, userId) {
+      return data.userId == userId
+        && isNonEmptyString(data.host, 255)
+        && isValidServerTimestamp(data.createdAt);
+    }
+
+    function isValidFilterRule(data, userId) {
+      return data.userId == userId
+        && isNonEmptyString(data.domain, 255)
+        && isValidServerTimestamp(data.createdAt);
+    }
+
+    // --- Collection Rules ---
+
+    match /users/{userId} {
+      allow get: if isOwner(userId);
+      allow list: if false;
+      allow create: if isOwner(userId)
+        && isValidId(userId)
+        && incoming().keys().hasAll(['userId', 'displayName', 'email', 'createdAt', 'updatedAt'])
+        && incoming().keys().hasOnly(['userId', 'displayName', 'email', 'photoUrl', 'createdAt', 'updatedAt'])
+        && isValidUserProfile(incoming(), userId);
+      allow update: if isOwner(userId)
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['displayName', 'email', 'photoUrl', 'updatedAt'])
+        && incoming().userId == existing().userId
+        && incoming().createdAt == existing().createdAt
+        && isValidUserProfile(incoming(), userId);
+      allow delete: if isOwner(userId);
+
+      match /bookmarks/{bookmarkId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && isValidId(bookmarkId)
+          && incoming().keys().hasAll(['userId', 'title', 'url', 'folder', 'speedDial', 'createdAt', 'updatedAt'])
+          && incoming().keys().hasOnly(['userId', 'title', 'url', 'folder', 'speedDial', 'createdAt', 'updatedAt'])
+          && isValidBookmark(incoming(), userId);
+        allow update: if isOwner(userId)
+          && isValidId(bookmarkId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'url', 'folder', 'speedDial', 'updatedAt'])
+          && incoming().userId == existing().userId
+          && incoming().createdAt == existing().createdAt
+          && isValidBookmark(incoming(), userId);
+        allow delete: if isOwner(userId) && isValidId(bookmarkId);
+      }
+
+      match /history/{historyId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && isValidId(historyId)
+          && incoming().keys().hasAll(['userId', 'title', 'url', 'visitedAt'])
+          && incoming().keys().hasOnly(['userId', 'title', 'url', 'visitedAt'])
+          && isValidHistoryEntry(incoming(), userId);
+        allow update: if isOwner(userId)
+          && isValidId(historyId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'visitedAt'])
+          && incoming().userId == existing().userId
+          && incoming().url == existing().url
+          && isValidHistoryEntry(incoming(), userId);
+        allow delete: if isOwner(userId) && isValidId(historyId);
+      }
+
+      match /searchEngines/{engineId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && isValidId(engineId)
+          && incoming().keys().hasAll(['userId', 'name', 'searchUrlTemplate', 'createdAt'])
+          && incoming().keys().hasOnly(['userId', 'name', 'searchUrlTemplate', 'createdAt'])
+          && isValidSearchEngine(incoming(), userId);
+        allow update: if isOwner(userId)
+          && isValidId(engineId)
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['name', 'searchUrlTemplate'])
+          && incoming().userId == existing().userId
+          && incoming().createdAt == existing().createdAt
+          && isValidSearchEngine(incoming(), userId);
+        allow delete: if isOwner(userId) && isValidId(engineId);
+      }
+
+      match /allowlist/{hostId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && isValidId(hostId)
+          && incoming().keys().hasAll(['userId', 'host', 'createdAt'])
+          && incoming().keys().hasOnly(['userId', 'host', 'createdAt'])
+          && isValidAllowlistHost(incoming(), userId);
+        allow update: if false;
+        allow delete: if isOwner(userId) && isValidId(hostId);
+      }
+
+      match /customFilterRules/{ruleId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId)
+          && isValidId(ruleId)
+          && incoming().keys().hasAll(['userId', 'domain', 'createdAt'])
+          && incoming().keys().hasOnly(['userId', 'domain', 'createdAt'])
+          && isValidFilterRule(incoming(), userId);
+        allow update: if false;
+        allow delete: if isOwner(userId) && isValidId(ruleId);
+      }
+    }
+  }
+}

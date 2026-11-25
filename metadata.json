@@ -1,0 +1,6 @@
+{
+  "name": "Fevro Browser",
+  "description": "Fevro Browser — fast, minimalist, privacy-first AMOLED black Android browser with real-time search suggestions, live news feed, ad & tracker blocking, reading mode, and local encrypted password auto-fill.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

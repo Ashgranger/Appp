@@ -1,0 +1,195 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Authenticated SwiftWeb user account profile and sync metadata.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User display name from Google Sign-In."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "User email address from Google Sign-In."
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "Optional profile avatar URL."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the profile was last synced."
+        }
+      },
+      "required": ["userId", "displayName", "email", "createdAt", "updatedAt"]
+    },
+    "CloudBookmark": {
+      "title": "CloudBookmark",
+      "description": "A user-saved bookmark or pinned Speed Dial shortcut synced across devices.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner UID."
+        },
+        "title": {
+          "type": "string",
+          "description": "Bookmark display title."
+        },
+        "url": {
+          "type": "string",
+          "description": "Destination web URL."
+        },
+        "folder": {
+          "type": "string",
+          "description": "Bookmark folder name."
+        },
+        "speedDial": {
+          "type": "boolean",
+          "description": "Whether this bookmark is pinned to the Start Page Speed Dial."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when last updated."
+        }
+      },
+      "required": ["userId", "title", "url", "folder", "speedDial", "createdAt", "updatedAt"]
+    },
+    "CloudHistoryEntry": {
+      "title": "CloudHistoryEntry",
+      "description": "A non-incognito browsing history visit synced to the user's cloud account.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner UID."
+        },
+        "title": {
+          "type": "string",
+          "description": "Visited page title."
+        },
+        "url": {
+          "type": "string",
+          "description": "Visited page URL."
+        },
+        "visitedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the visit."
+        }
+      },
+      "required": ["userId", "title", "url", "visitedAt"]
+    },
+    "CloudSearchEngine": {
+      "title": "CloudSearchEngine",
+      "description": "User-defined custom search engine template.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner UID."
+        },
+        "name": {
+          "type": "string",
+          "description": "Display name of the custom search engine."
+        },
+        "searchUrlTemplate": {
+          "type": "string",
+          "description": "URL template containing {query} placeholder."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when added."
+        }
+      },
+      "required": ["userId", "name", "searchUrlTemplate", "createdAt"]
+    },
+    "CloudAllowlistHost": {
+      "title": "CloudAllowlistHost",
+      "description": "Website host where SwiftShield ad/tracker blocking is paused by the user.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner UID."
+        },
+        "host": {
+          "type": "string",
+          "description": "Normalized allowlisted hostname."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when added."
+        }
+      },
+      "required": ["userId", "host", "createdAt"]
+    },
+    "CloudFilterRule": {
+      "title": "CloudFilterRule",
+      "description": "User-authored custom blocked domain rule for SwiftShield.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Owner UID."
+        },
+        "domain": {
+          "type": "string",
+          "description": "Normalized domain to block."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when added."
+        }
+      },
+      "required": ["userId", "domain", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Per-user profile document scoped strictly to request.auth.uid."
+    },
+    "/users/{userId}/bookmarks/{bookmarkId}": {
+      "schema": { "$ref": "#/entities/CloudBookmark" },
+      "description": "User's synced bookmarks and Speed Dial shortcuts."
+    },
+    "/users/{userId}/history/{historyId}": {
+      "schema": { "$ref": "#/entities/CloudHistoryEntry" },
+      "description": "User's synced non-incognito browsing history."
+    },
+    "/users/{userId}/searchEngines/{engineId}": {
+      "schema": { "$ref": "#/entities/CloudSearchEngine" },
+      "description": "User's synced custom search engines."
+    },
+    "/users/{userId}/allowlist/{hostId}": {
+      "schema": { "$ref": "#/entities/CloudAllowlistHost" },
+      "description": "User's synced SwiftShield site allowlist."
+    },
+    "/users/{userId}/customFilterRules/{ruleId}": {
+      "schema": { "$ref": "#/entities/CloudFilterRule" },
+      "description": "User's synced custom SwiftShield domain blocking rules."
+    }
+  }
+}

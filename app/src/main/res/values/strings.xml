@@ -1,0 +1,24 @@
+<resources>
+    <string name="app_name">Fevro Browser</string>
+    <string name="search_or_enter_url">Search or enter web address</string>
+    <string name="incognito_search_hint">Private search or URL</string>
+    <string name="new_tab">New Tab</string>
+    <string name="new_incognito_tab">New Incognito Tab</string>
+    <string name="swift_shield">SwiftShield</string>
+    <string name="reader_view">Reader View</string>
+    <string name="find_in_page">Find in page</string>
+    <string name="desktop_site">Desktop site</string>
+    <string name="bookmarks">Bookmarks</string>
+    <string name="history">History</string>
+    <string name="downloads">Downloads</string>
+    <string name="settings">Settings</string>
+    <string name="speed_dial">Speed Dial</string>
+    <string name="tab_groups">Tab Groups</string>
+    <string name="retry">Retry</string>
+    <string name="go_home">Start Page</string>
+    <string name="undo">Undo</string>
+    <string name="cancel">Cancel</string>
+    <string name="save">Save</string>
+    <string name="delete">Delete</string>
+    <string name="close">Close</string>
+</resources>
