@@ -67,8 +67,8 @@ fun BrowserHeroEmblem(
     isIncognito: Boolean,
     modifier: Modifier = Modifier
 ) {
-    val glowPrimary = if (isIncognito) Color(0xFFA855F7) else Color(0xFFFF5E3A)
-    val glowSecondary = if (isIncognito) Color(0xFF6366F1) else Color(0xFFFBBF24)
+    val glowPrimary = if (isIncognito) Color(0xFFA855F7) else Color(0xFF38BDF8)
+    val glowSecondary = if (isIncognito) Color(0xFF6366F1) else Color(0xFFFB923C)
 
     Box(
         contentAlignment = Alignment.Center,
@@ -94,21 +94,21 @@ fun BrowserHeroEmblem(
                 modifier = Modifier
                     .size(70.dp)
                     .clip(CircleShape)
-                    .background(Color(0xFF080C15))
+                    .background(Color(0xFFF3FAFD))
                     .border(
                         width = 1.4.dp,
                         brush = Brush.linearGradient(
                             colors = listOf(
-                                Color(0xFFFBBF24).copy(alpha = 0.78f),
-                                Color(0xFFFF5E3A).copy(alpha = 0.72f),
-                                Color(0xFFF43F5E).copy(alpha = 0.60f)
+                                Color(0xFF38BDF8).copy(alpha = 0.80f),
+                                Color(0xFF2DD4BF).copy(alpha = 0.75f),
+                                Color(0xFFFB923C).copy(alpha = 0.72f)
                             )
                         ),
                         shape = CircleShape
                     )
             ) {
                 Image(
-                    painter = painterResource(id = R.drawable.fevro_browser_icon_1795584654540),
+                    painter = painterResource(id = R.drawable.fevro_browser_icon),
                     contentDescription = "Fevro Browser icon",
                     contentScale = ContentScale.Crop,
                     modifier = Modifier

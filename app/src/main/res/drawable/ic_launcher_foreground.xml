@@ -3,6 +3,6 @@
     <item
         android:width="66dp"
         android:height="66dp"
-        android:drawable="@drawable/fevro_browser_icon_1795584654540"
+        android:drawable="@drawable/fevro_browser_icon"
         android:gravity="center" />
 </layer-list>

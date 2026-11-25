@@ -171,7 +171,7 @@ fun BrowserToolsSheet(
                         horizontalArrangement = Arrangement.spacedBy(10.dp)
                     ) {
                         Image(
-                            painter = painterResource(id = R.drawable.fevro_browser_icon_1795584654540),
+                            painter = painterResource(id = R.drawable.fevro_browser_icon),
                             contentDescription = "Fevro Browser icon",
                             contentScale = ContentScale.Crop,
                             modifier = Modifier
