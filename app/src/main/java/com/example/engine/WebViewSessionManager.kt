@@ -15,6 +15,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.URLUtil
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -366,8 +367,7 @@ class WebViewSessionManager(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.MATCH_PARENT
             )
-            // Hardware rendering acceleration & high renderer priority for maximum speed
-            setLayerType(View.LAYER_TYPE_HARDWARE, null)
+            // Rely on activity hardware acceleration (LAYER_TYPE_NONE) so Android cleanly falls back on virtualized GPUs
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 setRendererPriorityPolicy(WebView.RENDERER_PRIORITY_IMPORTANT, false)
             }
@@ -693,6 +693,15 @@ class WebViewSessionManager(
                         ?: "Unable to reach this page"
                     listener.onPageError(tabId, desc)
                 }
+            }
+
+            override fun onRenderProcessGone(
+                view: WebView?,
+                detail: RenderProcessGoneDetail?
+            ): Boolean {
+                destroyTab(tabId)
+                listener.onPageError(tabId, "Page renderer restarted. Tap reload to continue.")
+                return true
             }
         }
     }
