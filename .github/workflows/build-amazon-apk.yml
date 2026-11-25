@@ -1,0 +1,76 @@
+name: Build Amazon Release APK
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 36.1 platform
+        run: |
+          yes | sdkmanager --licenses || true
+          sdkmanager "platforms;android-36.1" "build-tools;36.0.0"
+
+      - name: Set up Gradle 9.3.1
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "9.3.1"
+
+      - name: Prepare release signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          SECRET_STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          SECRET_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > /tmp/fevro-release.jks
+            echo "KEYSTORE_PATH=/tmp/fevro-release.jks" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=$SECRET_STORE_PASSWORD" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=$SECRET_KEY_PASSWORD" >> "$GITHUB_ENV"
+          else
+            # Generates a release-signing certificate for Amazon Appstore (Amazon re-signs with your developer account key)
+            GENERATED_PASS=$(openssl rand -hex 16)
+            keytool -genkeypair -v \
+              -keystore /tmp/fevro-release.jks \
+              -storetype PKCS12 \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -alias upload \
+              -storepass "$GENERATED_PASS" \
+              -keypass "$GENERATED_PASS" \
+              -dname "CN=Fevro Browser, OU=Mobile, O=Fevro, C=US"
+            echo "KEYSTORE_PATH=/tmp/fevro-release.jks" >> "$GITHUB_ENV"
+            echo "STORE_PASSWORD=$GENERATED_PASS" >> "$GITHUB_ENV"
+            echo "KEY_PASSWORD=$GENERATED_PASS" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build Fevro Browser Release APK
+        run: gradle :app:assembleRelease --no-daemon
+
+      - name: Rename Release APK
+        run: |
+          mkdir -p release-output
+          cp app/build/outputs/apk/release/app-release.apk release-output/fevro-browser-release.apk
+
+      - name: Upload Fevro Browser APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fevro-browser-release-apk
+          path: release-output/fevro-browser-release.apk
+          if-no-files-found: error
