@@ -2,6 +2,8 @@ package com.example.engine
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionSpec
+import okhttp3.CookieJar
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONArray
@@ -14,10 +16,13 @@ import java.util.concurrent.TimeUnit
  */
 class SearchSuggestionService(
     private val client: OkHttpClient = OkHttpClient.Builder()
+        .connectionSpecs(listOf(ConnectionSpec.MODERN_TLS))
+        .cookieJar(CookieJar.NO_COOKIES)
         .connectTimeout(2500, TimeUnit.MILLISECONDS)
         .readTimeout(2500, TimeUnit.MILLISECONDS)
         .callTimeout(3000, TimeUnit.MILLISECONDS)
         .followRedirects(true)
+        .followSslRedirects(false)
         .build()
 ) {
 
@@ -30,6 +35,7 @@ class SearchSuggestionService(
         if (!shouldFetchRemoteSuggestions(trimmed)) return@withContext emptyList()
 
         val endpoint = buildSuggestionUrl(trimmed, engineId)
+        if (!endpoint.startsWith("https://", ignoreCase = true)) return@withContext emptyList()
         val request = Request.Builder()
             .url(endpoint)
             .header("Accept", "application/json, text/javascript, */*")

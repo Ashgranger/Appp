@@ -437,7 +437,17 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 autofillBannerDismissedForHost = null,
                 tabs = state.tabs.map {
                     if (it.id == tab.id) {
-                        it.copy(url = "", title = if (it.isIncognito) "Incognito" else "New Tab", isLoading = false, progress = 0, hasError = false, isReaderEligible = false)
+                        it.copy(
+                            url = "",
+                            title = if (it.isIncognito) "Incognito" else "New Tab",
+                            isLoading = false,
+                            progress = 0,
+                            hasError = false,
+                            errorDescription = "",
+                            isSecurityBlocked = false,
+                            securityBlockTitle = "",
+                            isReaderEligible = false
+                        )
                     } else it
                 }
             )
@@ -470,6 +480,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             updateTab(tab.id) {
                 it.copy(
                     hasError = false,
+                    errorDescription = "",
+                    isSecurityBlocked = false,
+                    securityBlockTitle = "",
                     isLoading = true,
                     progress = 12,
                     blockedCount = 0,
@@ -598,6 +611,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             sessionManager.loadUrl(newTab.id, targetUrl, isIncognito, newTab.isDesktopMode, newTab.textZoomPercent)
         }
         if (switchToTab) {
+            sessionManager.syncCookiePolicyForActiveTab(isIncognito)
             sessionManager.pauseInactiveTabs(newTab.id)
         }
         return newTab
@@ -605,7 +619,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun selectTab(tabId: String) {
         captureActiveTabThumbnail()
+        var targetIncognito = false
         _uiState.update { state ->
+            targetIncognito = state.tabs.firstOrNull { it.id == tabId }?.isIncognito ?: false
             val updated = state.copy(
                 activeTabId = tabId,
                 activeOverlay = ActiveOverlay.NONE,
@@ -618,6 +634,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
             )
             updated.copy(autofillMatchesForActiveTab = computeAutofillMatches(updated))
         }
+        sessionManager.syncCookiePolicyForActiveTab(targetIncognito)
         sessionManager.pauseInactiveTabs(tabId)
     }
 
@@ -631,9 +648,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         val closing = state.tabs.filter { it.id in tabIds }
         if (closing.isEmpty()) return
 
+        // Never store closed Incognito tabs in the Undo buffer
         closedTabUndoBuffer.clear()
+        val restorableClosing = closing.filterNot { it.isIncognito }
         closedTabUndoBuffer.addAll(
-            closing.map {
+            restorableClosing.map {
                 ClosedTabRecord(it.url, it.title, it.isIncognito, it.groupId, it.isDesktopMode)
             }
         )
@@ -667,13 +686,18 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         } else {
             state.activeTabId
         }
+        val newActiveIsIncognito = remaining.firstOrNull { it.id == newActiveId }?.isIncognito ?: false
 
         // Clear group filter if the filtered group no longer has tabs
         val remainingGroupIds = remaining.mapNotNull { it.groupId }.toSet()
         val cleanedGroups = state.tabGroups.filter { it.id in remainingGroupIds }
         val nextFilterId = state.activeTabGroupFilterId?.takeIf { fid -> cleanedGroups.any { it.id == fid } }
 
-        val label = if (closing.size == 1) "Closed tab" else "Closed ${closing.size} tabs"
+        val label = if (closing.size == 1) {
+            if (closing.first().isIncognito) "Closed private tab & wiped data" else "Closed tab"
+        } else {
+            "Closed ${closing.size} tabs"
+        }
         _uiState.update {
             it.copy(
                 tabs = remaining,
@@ -683,9 +707,10 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 isTabMultiSelectMode = false,
                 selectedTabIds = emptySet(),
                 snackbarMessage = label,
-                canUndoClosedTabs = true
+                canUndoClosedTabs = restorableClosing.isNotEmpty()
             )
         }
+        sessionManager.syncCookiePolicyForActiveTab(newActiveIsIncognito)
         sessionManager.pauseInactiveTabs(newActiveId)
     }
 
@@ -1151,9 +1176,11 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun startManualDownload(url: String, mimeType: String? = null) {
         val resolved = resolveInputToUrl(url)
+        val isIncognito = _uiState.value.activeTab?.isIncognito == true
         downloadEngine.startDownload(
             url = resolved,
             mimeType = mimeType,
+            isIncognito = isIncognito,
             onStarted = { fileName ->
                 val isApk = isApkDownload(fileName, mimeType.orEmpty())
                 analyticsTracker.recordDownloadStarted(fileName, mimeType.orEmpty(), isApk)
@@ -1457,7 +1484,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     private fun computeAutofillMatches(state: BrowserUiState): List<SavedCredential> {
         if (!state.preferences.passwordManagerEnabled) return emptyList()
         val tab = state.activeTab ?: return emptyList()
-        if (tab.isStartPage || !tab.url.startsWith("http", true)) return emptyList()
+        // Never autofill inside Incognito tabs or non-HTTPS origins
+        if (tab.isStartPage || tab.isIncognito || !tab.url.startsWith("https://", true)) return emptyList()
         val host = tab.displayHost
         if (host.isBlank() || host == state.autofillBannerDismissedForHost) return emptyList()
         return passwordStore.findForHost(tab.url)
@@ -1505,6 +1533,9 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     fun handleClearOnExitIfNeeded() {
         val prefs = _uiState.value.preferences
+        if (_uiState.value.tabs.any { it.isIncognito }) {
+            sessionManager.purgeIncognitoSessionData()
+        }
         if (prefs.clearHistoryOnExit) {
             viewModelScope.launch(Dispatchers.IO) { repository.clearAllHistory() }
         }
@@ -1515,7 +1546,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     private fun captureActiveTabThumbnail() {
         val active = _uiState.value.activeTab ?: return
-        if (active.isStartPage) return
+        if (active.isStartPage || active.isIncognito) return
         val bmp = sessionManager.captureThumbnail(active.id) ?: return
         updateTab(active.id) { it.copy(thumbnail = bmp) }
     }
@@ -1536,6 +1567,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
                 progress = 15,
                 hasError = false,
                 errorDescription = "",
+                isSecurityBlocked = false,
+                securityBlockTitle = "",
                 isReaderEligible = false
             )
         }
@@ -1623,7 +1656,42 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     override fun onPageError(tabId: String, description: String) {
         updateTab(tabId) {
-            it.copy(isLoading = false, progress = 0, hasError = true, errorDescription = description)
+            it.copy(
+                isLoading = false,
+                progress = 0,
+                hasError = true,
+                errorDescription = description,
+                isSecurityBlocked = false,
+                securityBlockTitle = ""
+            )
+        }
+    }
+
+    override fun onSslCertificateError(tabId: String, url: String, reason: String) {
+        updateTab(tabId) {
+            it.copy(
+                url = url.ifBlank { it.url },
+                isLoading = false,
+                progress = 0,
+                hasError = true,
+                isSecurityBlocked = true,
+                securityBlockTitle = "Connection Not Private",
+                errorDescription = "$reason Fevro Browser blocked this connection to protect your data."
+            )
+        }
+    }
+
+    override fun onSafeBrowsingThreat(tabId: String, url: String, threatLabel: String) {
+        updateTab(tabId) {
+            it.copy(
+                url = url.ifBlank { it.url },
+                isLoading = false,
+                progress = 0,
+                hasError = true,
+                isSecurityBlocked = true,
+                securityBlockTitle = "Safe Browsing Blocked: $threatLabel",
+                errorDescription = "Google Safe Browsing flagged this page as potentially dangerous."
+            )
         }
     }
 
@@ -1664,11 +1732,13 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
         contentDisposition: String?,
         mimeType: String?
     ) {
+        val isIncognito = _uiState.value.activeTab?.isIncognito == true
         downloadEngine.startDownload(
             url = url,
             userAgent = userAgent,
             contentDisposition = contentDisposition,
             mimeType = mimeType,
+            isIncognito = isIncognito,
             onStarted = { fileName ->
                 val isApk = isApkDownload(fileName, mimeType.orEmpty())
                 analyticsTracker.recordDownloadStarted(fileName, mimeType.orEmpty(), isApk)
@@ -1691,6 +1761,8 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
 
     override fun onLoginFormDetected(tabId: String, pageUrl: String) {
         val state = _uiState.value
+        val tab = state.tabs.firstOrNull { it.id == tabId } ?: return
+        if (tab.isIncognito || !pageUrl.startsWith("https://", ignoreCase = true)) return
         if (!state.preferences.passwordManagerEnabled || state.activeTabId != tabId) return
         val matches = passwordStore.findForHost(pageUrl)
         if (matches.isNotEmpty()) {
@@ -1711,7 +1783,7 @@ class BrowserViewModel(application: Application) : AndroidViewModel(application)
     ) {
         val state = _uiState.value
         val tab = state.tabs.firstOrNull { it.id == tabId } ?: return
-        if (tab.isIncognito) return
+        if (tab.isIncognito || !originUrl.startsWith("https://", ignoreCase = true)) return
         if (!state.preferences.passwordManagerEnabled || !state.preferences.autoPromptSavePasswords) return
         val host = SwiftShieldEngine.normalizeHost(originUrl)
         if (host.isBlank()) return

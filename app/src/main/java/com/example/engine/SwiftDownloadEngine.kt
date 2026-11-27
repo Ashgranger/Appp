@@ -64,10 +64,17 @@ class SwiftDownloadEngine(
     }
 
     private fun allocateUniqueFile(desiredName: String): File {
-        val safeName = desiredName.replace(Regex("[^a-zA-Z0-9._\\- ]"), "_").ifBlank { "download.bin" }
+        val baseOnly = File(desiredName).name
+        val safeName = baseOnly.replace(Regex("[^a-zA-Z0-9._\\- ]"), "_")
+            .trimStart('.')
+            .ifBlank { "download.bin" }
         val dir = downloadsDir()
+        val canonicalDir = dir.canonicalPath + File.separator
         var candidate = File(dir, safeName)
-        if (!candidate.exists()) return candidate
+        if (!candidate.exists()) {
+            require(candidate.canonicalPath.startsWith(canonicalDir)) { "Invalid download destination" }
+            return candidate
+        }
 
         val dotIdx = safeName.lastIndexOf('.')
         val base = if (dotIdx > 0) safeName.substring(0, dotIdx) else safeName
@@ -77,6 +84,7 @@ class SwiftDownloadEngine(
             candidate = File(dir, "$base ($counter)$ext")
             counter++
         }
+        require(candidate.canonicalPath.startsWith(canonicalDir)) { "Invalid download destination" }
         return candidate
     }
 
@@ -85,13 +93,18 @@ class SwiftDownloadEngine(
         userAgent: String? = null,
         contentDisposition: String? = null,
         mimeType: String? = null,
+        isIncognito: Boolean = false,
         onStarted: ((String) -> Unit)? = null
     ) {
         scope.launch {
             val cleanUrl = url.trim()
-            if (cleanUrl.isBlank()) return@launch
+            if (!cleanUrl.startsWith("https://", ignoreCase = true) &&
+                !cleanUrl.startsWith("http://", ignoreCase = true)
+            ) {
+                return@launch
+            }
             val guessedName = URLUtil.guessFileName(cleanUrl, contentDisposition, mimeType)
-            val targetFile = allocateUniqueFile(guessedName)
+            val targetFile = runCatching { allocateUniqueFile(guessedName) }.getOrNull() ?: return@launch
             val entity = DownloadEntity(
                 fileName = targetFile.name,
                 url = cleanUrl,
@@ -104,7 +117,13 @@ class SwiftDownloadEngine(
             )
             val id = downloadDao.insert(entity)
             onStarted?.invoke(targetFile.name)
-            launchTransfer(id = id, url = cleanUrl, localPath = targetFile.absolutePath, userAgent = userAgent)
+            launchTransfer(
+                id = id,
+                url = cleanUrl,
+                localPath = targetFile.absolutePath,
+                userAgent = userAgent,
+                isIncognito = isIncognito
+            )
         }
     }
 
@@ -173,14 +192,25 @@ class SwiftDownloadEngine(
         }
     }
 
-    private fun launchTransfer(id: Long, url: String, localPath: String, userAgent: String?) {
+    private fun launchTransfer(
+        id: Long,
+        url: String,
+        localPath: String,
+        userAgent: String?,
+        isIncognito: Boolean = false
+    ) {
         activeJobs[id]?.cancel()
         val job = scope.launch {
             val file = File(localPath)
             val existingBytes = if (file.exists()) file.length() else 0L
 
             try {
-                val cookies = runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
+                // Never leak normal-session cookies into downloads triggered from Incognito tabs
+                val cookies = if (isIncognito) {
+                    null
+                } else {
+                    runCatching { CookieManager.getInstance().getCookie(url) }.getOrNull()
+                }
                 val reqBuilder = Request.Builder()
                     .url(url)
                     .header("User-Agent", userAgent ?: WebViewSessionManager.MOBILE_USER_AGENT)

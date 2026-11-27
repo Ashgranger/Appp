@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Trust only system Certificate Authorities to prevent rogue user-installed MITM certs -->
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+
+    <!-- Enforce strict HTTPS-only transport on all Fevro Browser service & feed domains -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">feeds.bbci.co.uk</domain>
+        <domain includeSubdomains="true">news.google.com</domain>
+        <domain includeSubdomains="true">suggestqueries.google.com</domain>
+        <domain includeSubdomains="true">www.google.com</domain>
+        <domain includeSubdomains="true">duckduckgo.com</domain>
+        <domain includeSubdomains="true">api.bing.com</domain>
+        <domain includeSubdomains="true">search.brave.com</domain>
+        <domain includeSubdomains="true">en.wikipedia.org</domain>
+        <domain includeSubdomains="true">pgl.yoyo.org</domain>
+        <domain includeSubdomains="true">raw.githubusercontent.com</domain>
+        <domain includeSubdomains="true">v.firebog.net</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </domain-config>
+</network-security-config>

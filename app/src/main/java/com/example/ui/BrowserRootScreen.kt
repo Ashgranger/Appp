@@ -25,6 +25,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CloudOff
+import androidx.compose.material.icons.filled.GppBad
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.Button
@@ -231,6 +232,8 @@ fun BrowserRootScreen(viewModel: BrowserViewModel) {
                         WebErrorCard(
                             url = activeTab.url,
                             description = activeTab.errorDescription,
+                            isSecurityBlocked = activeTab.isSecurityBlocked,
+                            securityTitle = activeTab.securityBlockTitle,
                             onRetry = { viewModel.reloadOrStop() },
                             onGoHome = { viewModel.goHome() }
                         )
@@ -596,6 +599,8 @@ fun BrowserRootScreen(viewModel: BrowserViewModel) {
 private fun WebErrorCard(
     url: String,
     description: String,
+    isSecurityBlocked: Boolean = false,
+    securityTitle: String = "",
     onRetry: () -> Unit,
     onGoHome: () -> Unit
 ) {
@@ -609,7 +614,14 @@ private fun WebErrorCard(
         Surface(
             shape = RoundedCornerShape(26.dp),
             color = MaterialTheme.colorScheme.surface,
-            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+            border = BorderStroke(
+                width = 1.dp,
+                color = if (isSecurityBlocked) {
+                    MaterialTheme.colorScheme.error.copy(alpha = 0.55f)
+                } else {
+                    MaterialTheme.colorScheme.outlineVariant
+                }
+            ),
             tonalElevation = 2.dp,
             shadowElevation = 2.dp,
             modifier = Modifier.fillMaxWidth()
@@ -624,17 +636,21 @@ private fun WebErrorCard(
                     modifier = Modifier
                         .size(72.dp)
                         .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.12f))
-                        .border(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.28f), CircleShape)
+                        .background(MaterialTheme.colorScheme.error.copy(alpha = 0.14f))
+                        .border(1.dp, MaterialTheme.colorScheme.error.copy(alpha = 0.35f), CircleShape)
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.CloudOff,
+                        imageVector = if (isSecurityBlocked) Icons.Filled.GppBad else Icons.Filled.CloudOff,
                         contentDescription = null,
                         tint = MaterialTheme.colorScheme.error,
                         modifier = Modifier.size(34.dp)
                     )
                 }
-                Text("Page Could Not Load", style = MaterialTheme.typography.titleLarge)
+                Text(
+                    text = if (isSecurityBlocked && securityTitle.isNotBlank()) securityTitle else "Page Could Not Load",
+                    style = MaterialTheme.typography.titleLarge,
+                    textAlign = TextAlign.Center
+                )
                 Text(
                     text = description,
                     style = MaterialTheme.typography.bodyMedium,
@@ -650,15 +666,26 @@ private fun WebErrorCard(
                 )
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedButton(onClick = onGoHome) {
-                        Icon(Icons.Filled.Home, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.size(6.dp))
-                        Text("Start Page")
-                    }
-                    Button(onClick = onRetry, modifier = Modifier.testTag("error_retry_button")) {
-                        Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.size(6.dp))
-                        Text("Retry")
+                    if (isSecurityBlocked) {
+                        Button(
+                            onClick = onGoHome,
+                            modifier = Modifier.testTag("security_back_to_safety_button")
+                        ) {
+                            Icon(Icons.Filled.Home, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.size(6.dp))
+                            Text("Back to Safety")
+                        }
+                    } else {
+                        OutlinedButton(onClick = onGoHome) {
+                            Icon(Icons.Filled.Home, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.size(6.dp))
+                            Text("Start Page")
+                        }
+                        Button(onClick = onRetry, modifier = Modifier.testTag("error_retry_button")) {
+                            Icon(Icons.Filled.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                            Spacer(Modifier.size(6.dp))
+                            Text("Retry")
+                        }
                     }
                 }
             }

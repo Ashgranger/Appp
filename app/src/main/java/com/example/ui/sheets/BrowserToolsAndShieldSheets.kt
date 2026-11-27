@@ -801,8 +801,8 @@ fun SwiftShieldPanelSheet(
             ) {
                 Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp)) {
                     ShieldToggleItem(
-                        title = "Cosmetic Hiding & Slot Collapse",
-                        subtitle = "Hide ad containers & collapse empty spaces",
+                        title = "YouTube, Video & Cosmetic Ad Shield",
+                        subtitle = "Block YouTube video ads, ad containers & anti-adblock popups",
                         checked = preferences.cosmeticBlockingEnabled,
                         onCheckedChange = onToggleCosmetic,
                         tag = "shield_panel_cosmetic"

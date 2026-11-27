@@ -4,6 +4,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,41 +19,46 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Android
-import androidx.compose.material.icons.filled.AudioFile
-import androidx.compose.material.icons.filled.Cancel
-import androidx.compose.material.icons.filled.CheckCircle
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Description
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.ErrorOutline
-import androidx.compose.material.icons.filled.FolderZip
-import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.InsertDriveFile
-import androidx.compose.material.icons.filled.OpenInNew
-import androidx.compose.material.icons.filled.Pause
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.VideoFile
+import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Android
+import androidx.compose.material.icons.rounded.AudioFile
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Cancel
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.CloudDownload
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.Download
+import androidx.compose.material.icons.rounded.ErrorOutline
+import androidx.compose.material.icons.rounded.FolderZip
+import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.InsertDriveFile
+import androidx.compose.material.icons.rounded.OpenInNew
+import androidx.compose.material.icons.rounded.Pause
+import androidx.compose.material.icons.rounded.PermMedia
+import androidx.compose.material.icons.rounded.PlayArrow
+import androidx.compose.material.icons.rounded.Refresh
+import androidx.compose.material.icons.rounded.Share
+import androidx.compose.material.icons.rounded.Storage
+import androidx.compose.material.icons.rounded.VideoFile
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.FilledTonalIconButton
-import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -61,7 +67,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
@@ -79,8 +89,10 @@ import java.util.Locale
 
 enum class DownloadFilter(val label: String) {
     ALL("All"),
-    APPS("Apps (APK)"),
     ACTIVE("Active"),
+    APPS("Apps (APK)"),
+    MEDIA("Media"),
+    DOCS("Docs"),
     COMPLETED("Completed")
 }
 
@@ -92,6 +104,51 @@ internal fun isApkDownload(fileName: String, mimeType: String): Boolean {
         name.endsWith(".xapk") ||
         name.endsWith(".aab") ||
         mime.contains("android.package-archive")
+}
+
+private fun isMediaDownload(fileName: String, mimeType: String): Boolean {
+    val name = fileName.lowercase()
+    val mime = mimeType.lowercase()
+    return mime.startsWith("image/") || mime.startsWith("video/") || mime.startsWith("audio/") ||
+        name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".webp") ||
+        name.endsWith(".mp4") || name.endsWith(".mkv") || name.endsWith(".webm") ||
+        name.endsWith(".mp3") || name.endsWith(".wav") || name.endsWith(".flac")
+}
+
+private fun isDocumentDownload(fileName: String, mimeType: String): Boolean {
+    val name = fileName.lowercase()
+    val mime = mimeType.lowercase()
+    return mime.contains("pdf") || mime.startsWith("text/") || mime.contains("document") ||
+        mime.contains("zip") || mime.contains("rar") || mime.contains("tar") ||
+        name.endsWith(".pdf") || name.endsWith(".txt") || name.endsWith(".doc") || name.endsWith(".docx") ||
+        name.endsWith(".csv") || name.endsWith(".zip") || name.endsWith(".rar")
+}
+
+private data class FileCategoryVisual(
+    val icon: ImageVector,
+    val tint: Color,
+    val badge: String?
+)
+
+@Composable
+private fun fileVisualFor(mimeType: String, fileName: String): FileCategoryVisual {
+    val mime = mimeType.lowercase()
+    val name = fileName.lowercase()
+    val ext = fileName.substringAfterLast('.', "").uppercase().take(5).ifBlank { null }
+    return when {
+        isApkDownload(fileName, mimeType) -> FileCategoryVisual(Icons.Rounded.Android, ShieldEmerald, "APK")
+        mime.startsWith("image/") || name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".webp") ->
+            FileCategoryVisual(Icons.Rounded.Image, Color(0xFF38BDF8), ext ?: "IMG")
+        mime.startsWith("video/") || name.endsWith(".mp4") || name.endsWith(".mkv") || name.endsWith(".webm") ->
+            FileCategoryVisual(Icons.Rounded.VideoFile, Color(0xFF60A5FA), ext ?: "VID")
+        mime.startsWith("audio/") || name.endsWith(".mp3") || name.endsWith(".wav") || name.endsWith(".flac") ->
+            FileCategoryVisual(Icons.Rounded.AudioFile, Color(0xFFA78BFA), ext ?: "AUD")
+        mime.contains("pdf") || mime.startsWith("text/") || name.endsWith(".pdf") || name.endsWith(".txt") || name.endsWith(".doc") || name.endsWith(".docx") ->
+            FileCategoryVisual(Icons.Rounded.Description, Color(0xFFC084FC), ext ?: "DOC")
+        mime.contains("zip") || mime.contains("rar") || mime.contains("tar") || name.endsWith(".zip") ->
+            FileCategoryVisual(Icons.Rounded.FolderZip, WarningAmber, ext ?: "ZIP")
+        else -> FileCategoryVisual(Icons.Rounded.InsertDriveFile, MaterialTheme.colorScheme.primary, ext)
+    }
 }
 
 @Composable
@@ -119,10 +176,12 @@ fun DownloadsManagerContent(
         }
         when (selectedFilter) {
             DownloadFilter.ALL -> byQuery
-            DownloadFilter.APPS -> byQuery.filter { isApkDownload(it.fileName, it.mimeType) }
             DownloadFilter.ACTIVE -> byQuery.filter {
                 it.downloadStatus == DownloadStatus.DOWNLOADING || it.downloadStatus == DownloadStatus.PAUSED
             }
+            DownloadFilter.APPS -> byQuery.filter { isApkDownload(it.fileName, it.mimeType) }
+            DownloadFilter.MEDIA -> byQuery.filter { isMediaDownload(it.fileName, it.mimeType) }
+            DownloadFilter.DOCS -> byQuery.filter { isDocumentDownload(it.fileName, it.mimeType) }
             DownloadFilter.COMPLETED -> byQuery.filter { it.downloadStatus == DownloadStatus.COMPLETED }
         }
     }
@@ -139,77 +198,94 @@ fun DownloadsManagerContent(
         filtered.filter { it.downloadStatus == DownloadStatus.COMPLETED }
     }
 
+    val liveDownloadingCount = remember(downloads) { downloads.count { it.downloadStatus == DownloadStatus.DOWNLOADING } }
+    val pausedCount = remember(downloads) { downloads.count { it.downloadStatus == DownloadStatus.PAUSED } }
+    val doneCount = remember(downloads) { downloads.count { it.downloadStatus == DownloadStatus.COMPLETED } }
     val apkCount = remember(downloads) { downloads.count { isApkDownload(it.fileName, it.mimeType) } }
+    val totalSpeedBytesPerSec = remember(downloads, speedsById) {
+        downloads
+            .filter { it.downloadStatus == DownloadStatus.DOWNLOADING }
+            .sumOf { speedsById[it.id] ?: 0L }
+    }
+    val totalSavedBytes = remember(downloads) {
+        downloads
+            .filter { it.downloadStatus == DownloadStatus.COMPLETED }
+            .sumOf { it.bytesDownloaded.coerceAtLeast(it.totalBytes.coerceAtLeast(0L)) }
+    }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Summary & Quick Manual Download Header Bar
-        Surface(
-            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.55f),
-            modifier = Modifier.fillMaxWidth()
+        // Luminous Storage & Transfer Hero Card
+        DownloadsHeroCard(
+            liveDownloadingCount = liveDownloadingCount,
+            pausedCount = pausedCount,
+            doneCount = doneCount,
+            apkCount = apkCount,
+            totalSpeedBytesPerSec = totalSpeedBytesPerSec,
+            totalSavedBytes = totalSavedBytes,
+            onAddUrlClick = { showNewDownloadDialog = true },
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 6.dp)
+        )
+
+        // Filter Pill Strip
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .horizontalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Column(modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween
-                ) {
-                    val activeCount = downloads.count { it.downloadStatus == DownloadStatus.DOWNLOADING }
-                    val pausedCount = downloads.count { it.downloadStatus == DownloadStatus.PAUSED }
-                    val doneCount = downloads.count { it.downloadStatus == DownloadStatus.COMPLETED }
-
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = when {
-                                activeCount > 0 -> "$activeCount downloading${if (pausedCount > 0) " • $pausedCount paused" else ""}"
-                                pausedCount > 0 -> "$pausedCount paused"
-                                else -> "$doneCount downloaded • $apkCount app(s)"
-                            },
-                            style = MaterialTheme.typography.titleSmall
-                        )
-                        Text(
-                            text = "Tracks APK app packages & files • Pause/Resume supported",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-
-                    Spacer(Modifier.width(8.dp))
-
-                    Button(
-                        onClick = { showNewDownloadDialog = true },
-                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                        modifier = Modifier.testTag("downloads_add_url_button")
-                    ) {
-                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(4.dp))
-                        Text("Download URL", style = MaterialTheme.typography.labelMedium)
-                    }
+            DownloadFilter.entries.forEach { filter ->
+                val isSelected = selectedFilter == filter
+                val countSuffix = when (filter) {
+                    DownloadFilter.ACTIVE -> (liveDownloadingCount + pausedCount).takeIf { it > 0 }?.let { " ($it)" } ?: ""
+                    DownloadFilter.APPS -> apkCount.takeIf { it > 0 }?.let { " ($it)" } ?: ""
+                    else -> ""
                 }
-
-                // Filter Chips (All / Apps (APK) / Active / Completed)
-                Row(
+                val chipIcon = when (filter) {
+                    DownloadFilter.ALL -> null
+                    DownloadFilter.ACTIVE -> Icons.Rounded.Bolt
+                    DownloadFilter.APPS -> Icons.Rounded.Android
+                    DownloadFilter.MEDIA -> Icons.Rounded.PermMedia
+                    DownloadFilter.DOCS -> Icons.Rounded.Description
+                    DownloadFilter.COMPLETED -> Icons.Rounded.CheckCircle
+                }
+                Surface(
+                    shape = RoundedCornerShape(50),
+                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer
+                    else MaterialTheme.colorScheme.surface,
+                    border = BorderStroke(
+                        1.dp,
+                        if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.65f)
+                        else MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+                    ),
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 14.dp)
-                        .padding(bottom = 10.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        .clip(RoundedCornerShape(50))
+                        .clickable { selectedFilter = filter }
+                        .testTag("downloads_filter_${filter.name.lowercase()}")
                 ) {
-                    DownloadFilter.entries.forEach { filter ->
-                        val chipLabel = if (filter == DownloadFilter.APPS && apkCount > 0) {
-                            "${filter.label} ($apkCount)"
-                        } else {
-                            filter.label
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        modifier = Modifier.padding(horizontal = 13.dp, vertical = 8.dp)
+                    ) {
+                        if (chipIcon != null) {
+                            Icon(
+                                imageVector = chipIcon,
+                                contentDescription = null,
+                                tint = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.size(14.dp)
+                            )
                         }
-                        FilterChip(
-                            selected = selectedFilter == filter,
-                            onClick = { selectedFilter = filter },
-                            label = { Text(chipLabel, style = MaterialTheme.typography.labelMedium) },
-                            modifier = Modifier.testTag("downloads_filter_${filter.name.lowercase()}")
+                        Text(
+                            text = "${filter.label}$countSuffix",
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium
+                            ),
+                            color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer
+                            else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
                 }
@@ -217,46 +293,32 @@ fun DownloadsManagerContent(
         }
 
         if (filtered.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
-                    modifier = Modifier.padding(32.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Filled.Download,
-                        contentDescription = null,
-                        tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.7f),
-                        modifier = Modifier.size(56.dp)
-                    )
-                    Text("No Downloads Yet", style = MaterialTheme.typography.titleLarge)
-                    Text(
-                        text = "Tap any download link on a page, long-press an image, or paste a direct file URL to start downloading.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    OutlinedButton(onClick = { showNewDownloadDialog = true }) {
-                        Icon(Icons.Filled.Add, contentDescription = null, modifier = Modifier.size(18.dp))
-                        Spacer(Modifier.width(6.dp))
-                        Text("Download from URL")
-                    }
-                }
-            }
+            EmptyLibraryState(
+                icon = Icons.Rounded.CloudDownload,
+                title = if (downloads.isEmpty()) "No Downloads Yet" else "No Matching Files",
+                subtitle = if (downloads.isEmpty()) {
+                    "Tap any download link while browsing, long-press media, or paste a direct file URL to begin."
+                } else {
+                    "Try a different filter category or clear your search query."
+                },
+                accentColor = ShieldEmerald,
+                ctaLabel = "Download from URL",
+                onCtaClick = { showNewDownloadDialog = true }
+            )
         } else {
-            val dateFmt = remember { SimpleDateFormat("MMM d, HH:mm", Locale.getDefault()) }
+            val dateFmt = remember { SimpleDateFormat("MMM d • h:mm a", Locale.getDefault()) }
 
             LazyColumn(
                 modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(14.dp),
+                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 6.dp, bottom = 24.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 if (activeTransfers.isNotEmpty()) {
                     item(key = "section_active") {
-                        Text(
-                            text = "Active & Queued Transfers (${activeTransfers.size})",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(start = 2.dp, top = 2.dp)
+                        DownloadSectionHeader(
+                            title = "Active & Queued Transfers",
+                            count = activeTransfers.size,
+                            accentColor = MaterialTheme.colorScheme.primary
                         )
                     }
                     items(activeTransfers, key = { "active_${it.id}" }) { item ->
@@ -273,11 +335,11 @@ fun DownloadsManagerContent(
 
                 if (completedFiles.isNotEmpty()) {
                     item(key = "section_recent") {
-                        Text(
-                            text = "Recently Downloaded Files (${completedFiles.size})",
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(start = 2.dp, top = 6.dp)
+                        DownloadSectionHeader(
+                            title = "Saved Files",
+                            count = completedFiles.size,
+                            accentColor = ShieldEmerald,
+                            modifier = Modifier.padding(top = if (activeTransfers.isNotEmpty()) 6.dp else 0.dp)
                         )
                     }
                     items(completedFiles, key = { "done_${it.id}" }) { item ->
@@ -290,7 +352,7 @@ fun DownloadsManagerContent(
                         )
                     }
                 }
-                item { Spacer(Modifier.height(16.dp)) }
+                item { Spacer(Modifier.height(12.dp)) }
             }
         }
     }
@@ -299,18 +361,26 @@ fun DownloadsManagerContent(
         var urlInput by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { showNewDownloadDialog = false },
-            title = { Text("Download File from URL") },
+            title = { Text("Download from URL", fontWeight = FontWeight.Bold) },
             text = {
-                OutlinedTextField(
-                    value = urlInput,
-                    onValueChange = { urlInput = it },
-                    label = { Text("Direct File URL") },
-                    placeholder = { Text("https://example.com/file.pdf") },
-                    singleLine = true,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .testTag("manual_download_url_input")
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        text = "Paste a direct HTTPS or HTTP file link. Pause and resume are supported automatically.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    OutlinedTextField(
+                        value = urlInput,
+                        onValueChange = { urlInput = it },
+                        label = { Text("Direct File URL") },
+                        placeholder = { Text("https://example.com/archive.zip") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(14.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("manual_download_url_input")
+                    )
+                }
             },
             confirmButton = {
                 Button(
@@ -332,6 +402,229 @@ fun DownloadsManagerContent(
 }
 
 @Composable
+private fun DownloadsHeroCard(
+    liveDownloadingCount: Int,
+    pausedCount: Int,
+    doneCount: Int,
+    apkCount: Int,
+    totalSpeedBytesPerSec: Long,
+    totalSavedBytes: Long,
+    onAddUrlClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    val accentGlow = if (liveDownloadingCount > 0) MaterialTheme.colorScheme.primary else ShieldEmerald
+
+    Surface(
+        shape = RoundedCornerShape(22.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (liveDownloadingCount > 0) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)
+            } else {
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.65f)
+            }
+        ),
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .drawBehind {
+                    drawCircle(
+                        brush = Brush.radialGradient(
+                            colors = listOf(
+                                accentGlow.copy(alpha = 0.16f),
+                                Color.Transparent
+                            ),
+                            center = Offset(size.width * 0.12f, size.height * 0.18f),
+                            radius = size.maxDimension * 0.58f
+                        )
+                    )
+                }
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Box(
+                        contentAlignment = Alignment.Center,
+                        modifier = Modifier
+                            .size(46.dp)
+                            .clip(RoundedCornerShape(14.dp))
+                            .background(accentGlow.copy(alpha = 0.16f))
+                    ) {
+                        Icon(
+                            imageVector = if (liveDownloadingCount > 0) Icons.Rounded.Download else Icons.Rounded.Storage,
+                            contentDescription = null,
+                            tint = accentGlow,
+                            modifier = Modifier.size(23.dp)
+                        )
+                    }
+                    Column {
+                        Text(
+                            text = when {
+                                liveDownloadingCount > 0 && totalSpeedBytesPerSec > 0L ->
+                                    "${formatBytes(totalSpeedBytesPerSec)}/s"
+                                liveDownloadingCount > 0 ->
+                                    "$liveDownloadingCount Active ${if (liveDownloadingCount == 1) "Transfer" else "Transfers"}"
+                                totalSavedBytes > 0L ->
+                                    formatBytes(totalSavedBytes)
+                                else -> "Download Vault"
+                            },
+                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = when {
+                                liveDownloadingCount > 0 -> "$liveDownloadingCount downloading${if (pausedCount > 0) " • $pausedCount paused" else ""}"
+                                pausedCount > 0 -> "$pausedCount paused • Tap resume to continue"
+                                doneCount > 0 -> "$doneCount saved ${if (doneCount == 1) "file" else "files"} • Pause & resume ready"
+                                else -> "Supports APKs, media & resumable links"
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                }
+
+                Spacer(Modifier.width(8.dp))
+
+                Button(
+                    onClick = onAddUrlClick,
+                    shape = RoundedCornerShape(50),
+                    contentPadding = PaddingValues(horizontal = 14.dp, vertical = 10.dp),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("downloads_add_url_button")
+                ) {
+                    Icon(Icons.Rounded.Add, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("URL", style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.SemiBold))
+                }
+            }
+
+            // Compact Telemetry Stat Pills
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                DownloadStatPill(
+                    label = "Active",
+                    value = (liveDownloadingCount + pausedCount).toString(),
+                    accent = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f)
+                )
+                DownloadStatPill(
+                    label = "Saved",
+                    value = doneCount.toString(),
+                    accent = ShieldEmerald,
+                    modifier = Modifier.weight(1f)
+                )
+                DownloadStatPill(
+                    label = "Apps",
+                    value = apkCount.toString(),
+                    accent = Color(0xFF38BDF8),
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun DownloadStatPill(
+    label: String,
+    value: String,
+    accent: Color,
+    modifier: Modifier = Modifier
+) {
+    Surface(
+        shape = RoundedCornerShape(12.dp),
+        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.45f),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.4f)),
+        modifier = modifier
+    ) {
+        Row(
+            modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.SpaceBetween
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(accent)
+                )
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1
+                )
+            }
+            Text(
+                text = value,
+                style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold),
+                color = MaterialTheme.colorScheme.onSurface
+            )
+        }
+    }
+}
+
+@Composable
+private fun DownloadSectionHeader(
+    title: String,
+    count: Int,
+    accentColor: Color,
+    modifier: Modifier = Modifier
+) {
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(7.dp)
+                .clip(CircleShape)
+                .background(accentColor)
+        )
+        Text(
+            text = title,
+            style = MaterialTheme.typography.labelLarge.copy(fontWeight = FontWeight.Bold),
+            color = accentColor
+        )
+        Surface(
+            shape = RoundedCornerShape(50),
+            color = accentColor.copy(alpha = 0.14f)
+        ) {
+            Text(
+                text = count.toString(),
+                style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold),
+                color = accentColor,
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp)
+            )
+        }
+    }
+}
+
+@Composable
 private fun ActiveDownloadCard(
     item: DownloadEntity,
     speedBytesPerSec: Long,
@@ -345,6 +638,8 @@ private fun ActiveDownloadCard(
         targetValue = item.progressFraction,
         label = "dl_progress_${item.id}"
     )
+    val visual = fileVisualFor(item.mimeType, item.fileName)
+    val host = remember(item.url) { extractCleanHost(item.url).ifBlank { item.url } }
 
     val (statusLabel, statusColor) = when (status) {
         DownloadStatus.DOWNLOADING -> "Downloading" to MaterialTheme.colorScheme.primary
@@ -355,10 +650,16 @@ private fun ActiveDownloadCard(
     }
 
     Surface(
-        shape = RoundedCornerShape(18.dp),
+        shape = RoundedCornerShape(20.dp),
         color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
-        tonalElevation = 2.dp,
+        border = BorderStroke(
+            width = 1.dp,
+            color = if (status == DownloadStatus.DOWNLOADING) {
+                MaterialTheme.colorScheme.primary.copy(alpha = 0.50f)
+            } else {
+                MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f)
+            }
+        ),
         modifier = Modifier
             .fillMaxWidth()
             .testTag("active_download_card_${item.id}")
@@ -367,35 +668,40 @@ private fun ActiveDownloadCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(14.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp)
+            verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
+                val iconTint = if (status == DownloadStatus.FAILED) DangerCrimson else visual.tint
                 Box(
                     contentAlignment = Alignment.Center,
                     modifier = Modifier
-                        .size(44.dp)
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(statusColor.copy(alpha = 0.14f))
+                        .size(46.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(iconTint.copy(alpha = 0.15f))
                 ) {
                     Icon(
-                        imageVector = if (status == DownloadStatus.FAILED) Icons.Filled.ErrorOutline else iconForMime(item.mimeType, item.fileName),
+                        imageVector = if (status == DownloadStatus.FAILED) Icons.Rounded.ErrorOutline else visual.icon,
                         contentDescription = null,
-                        tint = statusColor
+                        tint = iconTint,
+                        modifier = Modifier.size(23.dp)
                     )
                 }
 
-                Column(modifier = Modifier.weight(1f)) {
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(6.dp)
                     ) {
                         Text(
                             text = item.fileName,
-                            style = MaterialTheme.typography.titleSmall,
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f, fill = false)
@@ -405,7 +711,7 @@ private fun ActiveDownloadCard(
                         }
                     }
                     Text(
-                        text = item.url,
+                        text = host,
                         style = MonoCodeStyle,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
@@ -413,43 +719,51 @@ private fun ActiveDownloadCard(
                     )
                 }
 
-                // Pause / Resume / Retry Primary Action Button
+                // Pause / Resume / Retry Primary Control
                 when (status) {
                     DownloadStatus.DOWNLOADING -> {
                         FilledTonalIconButton(
                             onClick = onPause,
-                            modifier = Modifier.size(44.dp).testTag("download_pause_${item.id}")
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("download_pause_${item.id}")
                         ) {
-                            Icon(Icons.Filled.Pause, contentDescription = "Pause download")
+                            Icon(Icons.Rounded.Pause, contentDescription = "Pause download")
                         }
                     }
                     DownloadStatus.PAUSED -> {
                         FilledTonalIconButton(
                             onClick = onResume,
-                            modifier = Modifier.size(44.dp).testTag("download_resume_${item.id}")
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("download_resume_${item.id}")
                         ) {
-                            Icon(Icons.Filled.PlayArrow, contentDescription = "Resume download")
+                            Icon(Icons.Rounded.PlayArrow, contentDescription = "Resume download")
                         }
                     }
                     DownloadStatus.FAILED, DownloadStatus.CANCELLED -> {
                         FilledTonalIconButton(
                             onClick = onResume,
-                            modifier = Modifier.size(44.dp).testTag("download_retry_${item.id}")
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("download_retry_${item.id}")
                         ) {
-                            Icon(Icons.Filled.Refresh, contentDescription = "Retry download")
+                            Icon(Icons.Rounded.Refresh, contentDescription = "Retry download")
                         }
                     }
                     DownloadStatus.COMPLETED -> Unit
                 }
 
-                // Cancel or Delete Button
+                // Cancel or Remove Control
                 if (status == DownloadStatus.DOWNLOADING || status == DownloadStatus.PAUSED) {
                     IconButton(
                         onClick = onCancel,
-                        modifier = Modifier.size(44.dp).testTag("download_cancel_${item.id}")
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("download_cancel_${item.id}")
                     ) {
                         Icon(
-                            Icons.Filled.Cancel,
+                            imageVector = Icons.Rounded.Cancel,
                             contentDescription = "Cancel download",
                             tint = MaterialTheme.colorScheme.error
                         )
@@ -457,50 +771,84 @@ private fun ActiveDownloadCard(
                 } else {
                     IconButton(
                         onClick = onDelete,
-                        modifier = Modifier.size(44.dp).testTag("download_delete_${item.id}")
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("download_delete_${item.id}")
                     ) {
-                        Icon(Icons.Filled.Delete, contentDescription = "Remove download")
+                        Icon(
+                            imageVector = Icons.Rounded.DeleteOutline,
+                            contentDescription = "Remove download",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                     }
                 }
             }
 
-            // Progress Bar
+            // Rounded Progress Bar
             if (status == DownloadStatus.DOWNLOADING || status == DownloadStatus.PAUSED) {
                 if (item.totalBytes > 0L) {
                     LinearProgressIndicator(
                         progress = { animatedProgress },
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(RoundedCornerShape(3.dp)),
+                            .height(7.dp)
+                            .clip(RoundedCornerShape(50)),
                         color = statusColor,
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                        strokeCap = StrokeCap.Round
                     )
                 } else if (status == DownloadStatus.DOWNLOADING) {
                     LinearProgressIndicator(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(6.dp)
-                            .clip(RoundedCornerShape(3.dp)),
+                            .height(7.dp)
+                            .clip(RoundedCornerShape(50)),
                         color = statusColor,
-                        trackColor = MaterialTheme.colorScheme.surfaceVariant
+                        trackColor = MaterialTheme.colorScheme.surfaceVariant,
+                        strokeCap = StrokeCap.Round
                     )
                 }
             }
 
-            // Telemetry Footer Row (Status, Bytes, Percentage, Speed)
+            // Status & Speed Telemetry Footer
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Text(
-                    text = statusLabel,
-                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = statusColor,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    modifier = Modifier.weight(1f)
+                ) {
+                    Surface(
+                        shape = RoundedCornerShape(50),
+                        color = statusColor.copy(alpha = 0.14f)
+                    ) {
+                        Text(
+                            text = statusLabel,
+                            style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                            color = statusColor,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.padding(horizontal = 9.dp, vertical = 3.dp)
+                        )
+                    }
+
+                    if (status == DownloadStatus.DOWNLOADING && speedBytesPerSec > 0L) {
+                        Surface(
+                            shape = RoundedCornerShape(50),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.7f)
+                        ) {
+                            Text(
+                                text = "${formatBytes(speedBytesPerSec)}/s",
+                                style = MonoCodeStyle,
+                                color = MaterialTheme.colorScheme.onSurface,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                            )
+                        }
+                    }
+                }
 
                 val sizeText = if (item.totalBytes > 0L) {
                     val pct = (item.progressFraction * 100f).toInt()
@@ -511,17 +859,14 @@ private fun ActiveDownloadCard(
                     ""
                 }
 
-                val speedSuffix = if (status == DownloadStatus.DOWNLOADING && speedBytesPerSec > 0L) {
-                    " • ${formatBytes(speedBytesPerSec)}/s"
-                } else {
-                    ""
+                if (sizeText.isNotEmpty()) {
+                    Text(
+                        text = sizeText,
+                        style = MonoCodeStyle,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        maxLines = 1
+                    )
                 }
-
-                Text(
-                    text = "$sizeText$speedSuffix",
-                    style = MonoCodeStyle,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
             }
         }
     }
@@ -535,81 +880,163 @@ private fun CompletedDownloadCard(
     onShare: () -> Unit,
     onDelete: () -> Unit
 ) {
+    val visual = fileVisualFor(item.mimeType, item.fileName)
+    val host = remember(item.url) { extractCleanHost(item.url) }
+    val sizeFormatted = remember(item.bytesDownloaded, item.totalBytes) {
+        formatBytes(item.bytesDownloaded.coerceAtLeast(item.totalBytes.coerceAtLeast(0L)))
+    }
+
     Surface(
-        shape = RoundedCornerShape(16.dp),
+        shape = RoundedCornerShape(18.dp),
         color = MaterialTheme.colorScheme.surface,
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.55f)),
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
+            .clip(RoundedCornerShape(18.dp))
             .clickable(onClick = onOpen)
             .testTag("completed_download_card_${item.id}")
     ) {
-        Row(
+        Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 14.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                .padding(start = 14.dp, end = 10.dp, top = 12.dp, bottom = 10.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
-            Box(
-                contentAlignment = Alignment.Center,
-                modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(ShieldEmerald.copy(alpha = 0.14f))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp)
             ) {
-                Icon(
-                    imageVector = iconForMime(item.mimeType, item.fileName),
-                    contentDescription = null,
-                    tint = ShieldEmerald
-                )
-            }
-
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                ) {
-                    Text(
-                        text = item.fileName,
-                        style = MaterialTheme.typography.titleSmall,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f, fill = false)
-                    )
-                    if (isApkDownload(item.fileName, item.mimeType)) {
-                        ApkBadgePill()
-                    }
-                }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                Box(
+                    contentAlignment = Alignment.Center,
+                    modifier = Modifier
+                        .size(46.dp)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(visual.tint.copy(alpha = 0.15f))
                 ) {
                     Icon(
-                        imageVector = Icons.Filled.CheckCircle,
+                        imageVector = visual.icon,
                         contentDescription = null,
-                        tint = ShieldEmerald,
-                        modifier = Modifier.size(13.dp)
+                        tint = visual.tint,
+                        modifier = Modifier.size(23.dp)
                     )
-                    Text(
-                        text = "${formatBytes(item.bytesDownloaded.coerceAtLeast(item.totalBytes.coerceAtLeast(0L)))} • $formattedTime",
-                        style = MonoCodeStyle,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis
-                    )
+                }
+
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Text(
+                            text = item.fileName,
+                            style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false)
+                        )
+                        if (isApkDownload(item.fileName, item.mimeType)) {
+                            ApkBadgePill()
+                        } else if (visual.badge != null) {
+                            Surface(
+                                shape = RoundedCornerShape(6.dp),
+                                color = visual.tint.copy(alpha = 0.14f)
+                            ) {
+                                Text(
+                                    text = visual.badge,
+                                    style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
+                                    color = visual.tint,
+                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
+                                )
+                            }
+                        }
+                    }
+
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.CheckCircle,
+                            contentDescription = null,
+                            tint = ShieldEmerald,
+                            modifier = Modifier.size(13.dp)
+                        )
+                        Text(
+                            text = buildString {
+                                append(sizeFormatted)
+                                append(" • ")
+                                append(formattedTime)
+                                if (host.isNotBlank()) {
+                                    append(" • ")
+                                    append(host)
+                                }
+                            },
+                            style = MonoCodeStyle,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
                 }
             }
 
-            IconButton(onClick = onOpen, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.Filled.OpenInNew, contentDescription = "Open downloaded file", modifier = Modifier.size(20.dp))
-            }
-            IconButton(onClick = onShare, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.Filled.Share, contentDescription = "Share downloaded file", modifier = Modifier.size(20.dp))
-            }
-            IconButton(onClick = onDelete, modifier = Modifier.size(40.dp)) {
-                Icon(Icons.Filled.Delete, contentDescription = "Delete downloaded file", modifier = Modifier.size(20.dp))
+            // Crisp Bottom Action Strip (generous 48.dp targets, never crowds the filename)
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                FilledTonalButton(
+                    onClick = onOpen,
+                    shape = RoundedCornerShape(50),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 6.dp),
+                    modifier = Modifier.minimumInteractiveComponentSize()
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.OpenInNew,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text(
+                        text = if (isApkDownload(item.fileName, item.mimeType)) "Install / Open" else "Open",
+                        style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+                    )
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    FilledTonalIconButton(
+                        onClick = onShare,
+                        colors = IconButtonDefaults.filledTonalIconButtonColors(
+                            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f),
+                            contentColor = MaterialTheme.colorScheme.onSurface
+                        ),
+                        modifier = Modifier.minimumInteractiveComponentSize()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Share,
+                            contentDescription = "Share downloaded file",
+                            modifier = Modifier.size(18.dp)
+                        )
+                    }
+                    IconButton(
+                        onClick = onDelete,
+                        modifier = Modifier.minimumInteractiveComponentSize()
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.DeleteOutline,
+                            contentDescription = "Delete downloaded file",
+                            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                }
             }
         }
     }
@@ -622,25 +1049,11 @@ internal fun ApkBadgePill() {
         color = ShieldEmerald.copy(alpha = 0.16f)
     ) {
         Text(
-            text = "APP / APK",
+            text = "APK",
             style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Bold),
             color = ShieldEmerald,
-            modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 1.dp)
         )
-    }
-}
-
-private fun iconForMime(mimeType: String, fileName: String): ImageVector {
-    val mime = mimeType.lowercase()
-    val name = fileName.lowercase()
-    return when {
-        isApkDownload(fileName, mimeType) -> Icons.Filled.Android
-        mime.startsWith("image/") || name.endsWith(".png") || name.endsWith(".jpg") || name.endsWith(".jpeg") || name.endsWith(".webp") -> Icons.Filled.Image
-        mime.startsWith("video/") || name.endsWith(".mp4") || name.endsWith(".mkv") || name.endsWith(".webm") -> Icons.Filled.VideoFile
-        mime.startsWith("audio/") || name.endsWith(".mp3") || name.endsWith(".wav") || name.endsWith(".flac") -> Icons.Filled.AudioFile
-        mime.contains("pdf") || mime.startsWith("text/") || name.endsWith(".pdf") || name.endsWith(".txt") || name.endsWith(".doc") -> Icons.Filled.Description
-        mime.contains("zip") || mime.contains("rar") || mime.contains("tar") || name.endsWith(".zip") -> Icons.Filled.FolderZip
-        else -> Icons.Filled.InsertDriveFile
     }
 }
 

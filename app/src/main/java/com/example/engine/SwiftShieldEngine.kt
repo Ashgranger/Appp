@@ -11,8 +11,8 @@ data class SanitizedUrlResult(
 )
 
 /**
- * SwiftShield Pro: High-performance multi-layer ad, tracker, popup/ad-redirect,
- * cryptominer, and URL tracking parameter blocking engine.
+ * SwiftShield Pro: High-performance multi-layer ad, video-ad (YouTube/VAST/VPAID/IMA),
+ * tracker, popup/ad-redirect, cryptominer, and URL tracking parameter blocking engine.
  * Combines curated instant-ready offline baseline rules with live-updated Room filter lists
  * and user-defined custom rules.
  */
@@ -79,9 +79,10 @@ class SwiftShieldEngine {
     fun activeRuleCount(): Int = activeBlockSet.size
 
     private fun rebuildActiveSet() {
-        val merged = HashSet<String>(dynamicDomains.size + 512)
+        val merged = HashSet<String>(dynamicDomains.size + 768)
         if (blockAds) {
             merged.addAll(BASELINE_AD_DOMAINS)
+            merged.addAll(BASELINE_VIDEO_AD_DOMAINS)
             merged.addAll(BASELINE_POPUP_REDIRECT_DOMAINS)
         }
         if (blockTrackers) {
@@ -162,7 +163,9 @@ class SwiftShieldEngine {
             lowerUrl.contains("/aclk?") ||
             lowerUrl.contains("/clicktrack") ||
             lowerUrl.contains("/popunder") ||
-            lowerUrl.contains("doubleclick.net/pcs/click")
+            lowerUrl.contains("/pagead/aclk") ||
+            lowerUrl.contains("doubleclick.net/pcs/click") ||
+            lowerUrl.contains("googleadservices.com/pagead/aclk")
         ) {
             return true
         }
@@ -185,10 +188,24 @@ class SwiftShieldEngine {
         val path = uri.path?.lowercase().orEmpty()
         val query = uri.query?.lowercase().orEmpty()
 
-        // First-party resource: allow normal assets, block pure first-party ad/tracker endpoints
+        // Dedicated YouTube Video & Feed Ad Interception (preserves real video playback streams)
+        if (blockAds && (isYouTubeHost(reqHost) || isYouTubeHost(normalizedPageHost))) {
+            if (isYouTubeAdRequest(reqHost, path, query)) {
+                return true
+            }
+            // Never accidentally block essential YouTube media/thumbnail/API hosts
+            if (isYouTubeCoreAsset(reqHost, path)) {
+                return false
+            }
+        }
+
+        // First-party resource: allow normal assets, block pure first-party ad/tracker/video-ad endpoints
         if (reqHost == normalizedPageHost) {
-            if (blockAds && (turboMode || path.contains("/pagead/") || path.contains("/adsense/"))) {
+            if (blockAds) {
                 if (FIRST_PARTY_AD_PATH_PATTERNS.any { path.contains(it) }) {
+                    return true
+                }
+                if (VIDEO_AD_PATH_PATTERNS.any { path.contains(it) }) {
                     return true
                 }
             }
@@ -210,18 +227,27 @@ class SwiftShieldEngine {
             return true
         }
 
-        // URL path & script heuristics for third-party ad/tracker resources
-        if (blockAds && THIRD_PARTY_AD_PATH_PATTERNS.any { path.contains(it) }) {
-            return true
+        // URL path & script heuristics for third-party ad, VAST/VPAID video-ad, and tracker resources
+        if (blockAds) {
+            if (THIRD_PARTY_AD_PATH_PATTERNS.any { path.contains(it) } ||
+                VIDEO_AD_PATH_PATTERNS.any { path.contains(it) }
+            ) {
+                return true
+            }
+            if (query.contains("ad_type=") ||
+                query.contains("adunit=") ||
+                query.contains("adformat=") ||
+                query.contains("vast_url=")
+            ) {
+                return true
+            }
         }
         if (blockTrackers) {
             if (THIRD_PARTY_TRACKER_PATH_PATTERNS.any { path.contains(it) }) {
                 return true
             }
             if ((query.contains("utm_source=") && path.contains("/collect")) ||
-                (query.contains("fbclid=") && path.contains("pixel")) ||
-                query.contains("ad_type=") ||
-                query.contains("adunit=")
+                (query.contains("fbclid=") && path.contains("pixel"))
             ) {
                 return true
             }
@@ -229,19 +255,76 @@ class SwiftShieldEngine {
         return false
     }
 
+    private fun isYouTubeAdRequest(reqHost: String, path: String, query: String): Boolean {
+        if (reqHost == "ads.youtube.com" || reqHost == "adservice.google.com") return true
+        if (reqHost.endsWith("youtube.com")) {
+            if (YOUTUBE_AD_PATH_PATTERNS.any { path.contains(it) }) return true
+            if (path.contains("/generate_204") && (query.contains("ad") || query.contains("adunit"))) return true
+            if (path.contains("/get_video_info") && query.contains("adformat=")) return true
+        }
+        if (reqHost.endsWith("googlevideo.com")) {
+            if (path.contains("/ptracking")) return true
+            if (query.contains("adformat=") || query.contains("&oad=") || query.startsWith("oad=")) return true
+        }
+        return false
+    }
+
+    private fun isYouTubeCoreAsset(reqHost: String, path: String): Boolean {
+        if (reqHost.endsWith("ytimg.com") || reqHost.endsWith("ggpht.com") || reqHost == "googlevideo.com" || reqHost.endsWith(".googlevideo.com")) {
+            return true
+        }
+        if (reqHost.endsWith("youtube.com") && (
+                path.startsWith("/youtubei/v1/player") ||
+                    path.startsWith("/youtubei/v1/next") ||
+                    path.startsWith("/youtubei/v1/browse") ||
+                    path.startsWith("/youtubei/v1/search") ||
+                    path.startsWith("/youtubei/v1/reel") ||
+                    path.startsWith("/s/player/") ||
+                    path.startsWith("/s/desktop/") ||
+                    path.startsWith("/s/mobile/") ||
+                    path.startsWith("/api/stats/watchtime") ||
+                    path.startsWith("/api/stats/playback")
+                )
+        ) {
+            return true
+        }
+        return false
+    }
+
     /**
-     * Returns a clean, resource-appropriate empty stub response so blocked scripts,
-     * stylesheets, and 1x1 tracking pixels never cause JS exceptions or broken-image icons.
+     * Returns a clean, resource-appropriate stub response so blocked scripts, VAST video-ad XML,
+     * JSON ad APIs, stylesheets, and tracking pixels never cause JS exceptions or player hangs.
      */
     fun emptyBlockedResponse(requestUrl: String = ""): WebResourceResponse {
+        val lowerUrl = requestUrl.lowercase()
         val lowerPath = runCatching { Uri.parse(requestUrl).path?.lowercase().orEmpty() }.getOrDefault("")
+        val headers = mapOf(
+            "X-SwiftShield" to "Blocked",
+            "Access-Control-Allow-Origin" to "*"
+        )
         return when {
+            lowerPath.endsWith(".xml") || lowerPath.contains("/gampad/ads") || lowerUrl.contains("vast") -> WebResourceResponse(
+                "application/xml",
+                "utf-8",
+                200,
+                "OK",
+                headers,
+                ByteArrayInputStream("<VAST version=\"3.0\"></VAST>".toByteArray())
+            )
+            lowerPath.endsWith(".json") || lowerPath.contains("/youtubei/v1/") || lowerPath.contains("/api/") -> WebResourceResponse(
+                "application/json",
+                "utf-8",
+                200,
+                "OK",
+                headers,
+                ByteArrayInputStream("{}".toByteArray())
+            )
             lowerPath.endsWith(".js") || lowerPath.endsWith(".mjs") -> WebResourceResponse(
                 "application/javascript",
                 "utf-8",
                 200,
                 "OK",
-                mapOf("X-SwiftShield" to "Blocked"),
+                headers,
                 ByteArrayInputStream("/* SwiftShield */".toByteArray())
             )
             lowerPath.endsWith(".css") -> WebResourceResponse(
@@ -249,7 +332,7 @@ class SwiftShieldEngine {
                 "utf-8",
                 200,
                 "OK",
-                mapOf("X-SwiftShield" to "Blocked"),
+                headers,
                 ByteArrayInputStream(ByteArray(0))
             )
             lowerPath.endsWith(".gif") || lowerPath.endsWith(".png") || lowerPath.endsWith(".jpg") ||
@@ -258,7 +341,7 @@ class SwiftShieldEngine {
                 null,
                 200,
                 "OK",
-                mapOf("X-SwiftShield" to "Blocked"),
+                headers,
                 ByteArrayInputStream(TRANSPARENT_1X1_GIF)
             )
             else -> WebResourceResponse(
@@ -266,7 +349,7 @@ class SwiftShieldEngine {
                 "utf-8",
                 204,
                 "No Content",
-                mapOf("X-SwiftShield" to "Blocked"),
+                headers,
                 ByteArrayInputStream(ByteArray(0))
             )
         }
@@ -312,16 +395,29 @@ class SwiftShieldEngine {
         )
 
         private val AD_SUBDOMAIN_LABELS = setOf(
-            "ads", "adserver", "adservice", "adsystem", "adtech", "adclick", "pagead", "popads"
+            "ads", "ad", "adserver", "adservice", "adsystem", "adtech", "adclick",
+            "pagead", "popads", "pubads", "securepubads", "googleads", "adx", "adsrv"
         )
 
         private val TRACKER_SUBDOMAIN_LABELS = setOf(
-            "metrics", "telemetry", "beacon", "pixel", "track", "tracker", "tracking"
+            "metrics", "telemetry", "beacon", "pixel", "track", "tracker", "tracking", "analytics"
+        )
+
+        private val YOUTUBE_AD_PATH_PATTERNS = listOf(
+            "/pagead/", "/api/stats/ads", "/api/stats/atr", "/ptracking",
+            "/get_midroll_info", "/youtubei/v1/log_event", "/youtubei/v1/ad_",
+            "/ad_data_204", "/pcs/activeview", "/error_204", "/adunit/"
+        )
+
+        private val VIDEO_AD_PATH_PATTERNS = listOf(
+            "/gampad/ads", "/gampad/live/ads", "/vast.xml", "/vast/", "/vpaid",
+            "/ima3.js", "/ima3_debug.js", "/ads/vast", "/adtag", "/preroll",
+            "/midroll", "/adbreak", "/ad/g/"
         )
 
         private val FIRST_PARTY_AD_PATH_PATTERNS = listOf(
             "/pagead/", "/adsense/", "/doubleclick/", "/adserver/", "/adsbygoogle",
-            "/pubads_impl", "/gpt.js", "/prebid"
+            "/pubads_impl", "/gpt.js", "/prebid", "/ads/banner", "/sponsored-ads"
         )
 
         private val FIRST_PARTY_TRACKER_PATH_PATTERNS = listOf(
@@ -330,13 +426,25 @@ class SwiftShieldEngine {
 
         private val THIRD_PARTY_AD_PATH_PATTERNS = listOf(
             "/pagead/", "/adsense/", "/doubleclick/", "/adserver/", "/adsbygoogle",
-            "/pubads_impl", "/gpt.js", "/prebid", "/ads.js", "/ad_banner", "/sponsor_ad"
+            "/pubads_impl", "/gpt.js", "/prebid", "/ads.js", "/ad_banner", "/sponsor_ad",
+            "/amp-ad", "/amp-auto-ads", "/amp-sticky-ad", "/show_ads.js", "/ad_status.js"
         )
 
         private val THIRD_PARTY_TRACKER_PATH_PATTERNS = listOf(
             "/gtag/js", "/gtm.js", "/fbevents.js", "/analytics.js", "/pixel.gif",
-            "/tr/?id=", "/collect?v=", "/beacon.min.js"
+            "/tr/?id=", "/collect?v=", "/beacon.min.js", "/matomo.js", "/piwik.js"
         )
+
+        fun isYouTubeHost(hostOrUrl: String?): Boolean {
+            if (hostOrUrl.isNullOrBlank()) return false
+            val norm = normalizeHost(hostOrUrl)
+            return norm == "youtube.com" ||
+                norm.endsWith(".youtube.com") ||
+                norm == "youtu.be" ||
+                norm.endsWith(".youtu.be") ||
+                norm == "youtube-nocookie.com" ||
+                norm.endsWith(".youtube-nocookie.com")
+        }
 
         fun normalizeHost(hostOrUrl: String): String {
             val trimmed = hostOrUrl.trim().lowercase()
@@ -396,28 +504,51 @@ class SwiftShieldEngine {
             return domain.all { it in 'a'..'z' || it in '0'..'9' || it == '.' || it == '-' }
         }
 
+        val BASELINE_VIDEO_AD_DOMAINS = setOf(
+            "imasdk.googleapis.com", "ads.youtube.com", "googleads.g.doubleclick.net",
+            "pubads.g.doubleclick.net", "securepubads.g.doubleclick.net", "static.doubleclick.net",
+            "s0.2mdn.net", "fwmrm.net", "freewheel.tv", "innovid.com", "spotxchange.com",
+            "springserve.com", "vid.springserve.com", "teads.tv", "connatix.com", "primis.tech",
+            "aniview.com", "stickyadstv.com", "tremorhub.com", "cedexis.com", "brightroll.com",
+            "videologygroup.com", "tubemogul.com", "spotx.tv", "vidoomy.com", "brid.tv",
+            "jwpltx.com", "adswizz.com", "tritondigital.com", "podscribe.com"
+        )
+
         val BASELINE_AD_DOMAINS = setOf(
             "doubleclick.net", "googlesyndication.com", "googleadservices.com", "adservice.google.com",
-            "pagead2.googlesyndication.com", "tpc.googlesyndication.com", "adnxs.com", "adsrvr.org",
-            "advertising.com", "adform.net", "adroll.com", "amazon-adsystem.com", "criteo.com",
-            "criteo.net", "outbrain.com", "taboola.com", "pubmatic.com", "rubiconproject.com",
-            "openx.net", "casalemedia.com", "indexww.com", "smartadserver.com", "sharethrough.com",
-            "triplelift.com", "yieldmo.com", "medianet.com", "media.net", "mgid.com", "revcontent.com",
-            "bidswitch.net", "contextweb.com", "lijit.com", "sovrn.com", "teads.tv", "zedo.com",
-            "adcolony.com", "applovin.com", "chartboost.com", "inmobi.com", "mopub.com", "unityads.unity3d.com",
-            "vungle.com", "ironsrc.com", "tapjoy.com", "flurry.com", "ads.yahoo.com", "adtech.de",
-            "ads.twitter.com", "ads.linkedin.com", "ads.tiktok.com", "ads.pinterest.com", "ad.doubleclick.net",
-            "adclick.g.doubleclick.net", "static.ads-twitter.com", "bat.bing.com", "ads.reddit.com",
-            "ad-delivery.net", "adblade.com", "adbutler.com", "adhigh.net", "adition.com", "adkernel.com",
-            "admanmedia.com", "admixer.net", "adnium.com", "adocean.pl", "adrecover.com", "adsafeprotected.com",
-            "adscale.de", "adsco.re", "adskeeper.co.uk", "adsymptotic.com", "adtarget.io", "adthrive.com",
-            "mediavine.com", "ezoic.net", "carbonads.net", "buysellads.com", "serving-sys.com", "2mdn.net",
-            "moatads.com", "doubleverify.com", "integralads.com", "spotxchange.com", "springserve.com",
-            "3lift.com", "33across.com", "adlightning.com", "adpushup.com", "ads-twitter.com",
-            "adsterra.com", "aniview.com", "btloader.com", "connatix.com", "emxdgt.com", "gumgum.com",
-            "id5-sync.com", "kargo.com", "liveintent.com", "magnite.com", "nativo.com", "primis.tech",
-            "richaudience.com", "seedtag.com", "smilewanted.com", "sonobi.com", "stickyadstv.com",
-            "tremorhub.com", "undertone.com", "unruly.co", "yieldlove.com", "zemanta.com"
+            "pagead2.googlesyndication.com", "tpc.googlesyndication.com", "pagead2.googleadservices.com",
+            "adnxs.com", "adsrvr.org", "advertising.com", "adform.net", "adroll.com",
+            "amazon-adsystem.com", "criteo.com", "criteo.net", "outbrain.com", "taboola.com",
+            "pubmatic.com", "rubiconproject.com", "openx.net", "casalemedia.com", "indexww.com",
+            "smartadserver.com", "sharethrough.com", "triplelift.com", "yieldmo.com", "medianet.com",
+            "media.net", "mgid.com", "revcontent.com", "bidswitch.net", "contextweb.com", "lijit.com",
+            "sovrn.com", "zedo.com", "adcolony.com", "applovin.com", "chartboost.com", "inmobi.com",
+            "mopub.com", "unityads.unity3d.com", "vungle.com", "ironsrc.com", "tapjoy.com",
+            "flurry.com", "ads.yahoo.com", "adtech.de", "ads.twitter.com", "ads.linkedin.com",
+            "ads.tiktok.com", "ads.pinterest.com", "ad.doubleclick.net", "adclick.g.doubleclick.net",
+            "static.ads-twitter.com", "bat.bing.com", "ads.reddit.com", "ad-delivery.net",
+            "adblade.com", "adbutler.com", "adhigh.net", "adition.com", "adkernel.com",
+            "admanmedia.com", "admixer.net", "adnium.com", "adocean.pl", "adrecover.com",
+            "adsafeprotected.com", "adscale.de", "adsco.re", "adskeeper.co.uk", "adsymptotic.com",
+            "adtarget.io", "adthrive.com", "mediavine.com", "ezoic.net", "carbonads.net",
+            "carbonads.com", "buysellads.com", "buysellads.net", "ethicalads.io", "serving-sys.com",
+            "2mdn.net", "moatads.com", "doubleverify.com", "integralads.com", "3lift.com",
+            "33across.com", "adlightning.com", "adpushup.com", "ads-twitter.com", "adsterra.com",
+            "btloader.com", "emxdgt.com", "gumgum.com", "id5-sync.com", "kargo.com", "liveintent.com",
+            "magnite.com", "nativo.com", "richaudience.com", "seedtag.com", "smilewanted.com",
+            "sonobi.com", "undertone.com", "unruly.co", "yieldlove.com", "zemanta.com",
+            "zergnet.com", "dianomi.com", "flashtalking.com", "sizmek.com", "celtra.com",
+            "bidvertiser.com", "monetag.com", "galaksion.com", "evadav.com", "richpush.co",
+            "pushground.com", "zeropark.com", "popmyads.com", "adspyglass.com", "yllix.com",
+            "a-ads.com", "coinzilla.com", "cointraffic.io", "bitmedia.io", "prebid.org",
+            "ad-maven.com", "rtmark.net", "acint.net", "adtrue.com", "adversal.com",
+            "adxpremium.services", "anyclip.com", "avantisvideo.com", "bidgear.com", "clickio.com",
+            "connectad.io", "deepintent.com", "districtm.io", "eskimi.com", "ex.co",
+            "freestar.com", "improvedigital.com", "iqzone.com", "justpremium.com", "lkqd.net",
+            "marfeel.com", "nitropay.com", "nobid.io", "onetag-sys.com", "playwire.com",
+            "raptive.com", "rkdms.com", "setupad.com", "snigelweb.com", "Sortable.com".lowercase(),
+            "stpd.cloud", "tappx.com", "thetradedesk.com", "unibots.in", "venatusmedia.com",
+            "vlitag.com", "yahoo.com.ads", "yieldlab.net"
         )
 
         val BASELINE_POPUP_REDIRECT_DOMAINS = setOf(
@@ -426,7 +557,10 @@ class SwiftShieldEngine {
             "admaven.com", "popunder.net", "trafficjunky.net", "trafficstars.com", "plugrush.com",
             "adsterra.network", "highcpmgate.com", "profitablegatecpm.com", "redirectvoluum.com",
             "trackvoluum.com", "pushame.com", "pushwoosh.com", "izooto.com", "subscribers.com",
-            "notifpush.com", "alwingulla.com", "detikads.com", "revjet.com"
+            "notifpush.com", "alwingulla.com", "detikads.com", "revjet.com", "trafficforce.com",
+            "ero-advertising.com", "adxpansion.com", "pushub.net", "pushwelcome.com",
+            "onclickperformance.com", "onclickmax.com", "toprevenuegate.com", "effectivegatecpm.com",
+            "highrevenuegate.com", "waytogrow.eu", "monetag.com", "realsrv.com", "magsrv.com"
         )
 
         val BASELINE_TRACKER_DOMAINS = setOf(
@@ -446,12 +580,15 @@ class SwiftShieldEngine {
             "crwdcntrl.net", "lotame.com", "liveramp.com", "pippio.com", "mathtag.com", "turn.com",
             "eyeota.net", "narrative.io", "permutive.com", "piano.io", "tinypass.com", "snowplowanalytics.com",
             "posthog.com", "pendo.io", "intercom-clicks.com", "driftt.com", "qualtrics.com",
-            "medallia.com", "contentsquare.net", "quantummetric.com", "glassboxdigital.io", "dynatrace.com"
+            "medallia.com", "contentsquare.net", "quantummetric.com", "glassboxdigital.io", "dynatrace.com",
+            "c.bing.com", "bat.r.msn.com", "analytics.twitter.com", "t.co/i/adsct", "b.scorecardresearch.com",
+            "cdn.segment.com", "api.amplitude.com", "rs.fullstory.com", "cdn.mxpnl.com"
         )
 
         val BASELINE_CRYPTOMINER_DOMAINS = setOf(
             "coinhive.com", "coin-hive.com", "jsecoin.com", "cryptoloot.pro", "crypto-loot.com",
-            "minero.cc", "webminepool.com", "authedmine.com", "monerominer.rocks", "ppoi.org"
+            "minero.cc", "webminepool.com", "authedmine.com", "monerominer.rocks", "ppoi.org",
+            "webminerpool.com", "browsermine.com", "coinimp.com"
         )
 
         val BASELINE_SOCIAL_DOMAINS = setOf(

@@ -6,6 +6,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.net.Uri
+import android.net.http.SslError
 import android.os.Build
 import android.os.Environment
 import android.os.SystemClock
@@ -16,6 +17,8 @@ import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.RenderProcessGoneDetail
+import android.webkit.SafeBrowsingResponse
+import android.webkit.SslErrorHandler
 import android.webkit.URLUtil
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -25,6 +28,7 @@ import android.webkit.WebSettings
 import android.webkit.WebStorage
 import android.webkit.WebView
 import android.webkit.WebViewClient
+import android.webkit.WebViewDatabase
 import com.example.data.BrowserPreferencesState
 import com.example.data.ImageLoadingPolicy
 import com.example.viewmodel.ContextMenuPayload
@@ -41,6 +45,8 @@ interface WebViewSessionListener {
     fun onTrackingParamsStripped(tabId: String, count: Int)
     fun onPopupOrRedirectBlocked(tabId: String, url: String)
     fun onPageError(tabId: String, description: String)
+    fun onSslCertificateError(tabId: String, url: String, reason: String)
+    fun onSafeBrowsingThreat(tabId: String, url: String, threatLabel: String)
     fun onFindResult(tabId: String, activeMatchOrdinal: Int, numberOfMatches: Int)
     fun onScrollDirectionChanged(scrollingDown: Boolean)
     fun onContextMenuRequested(payload: ContextMenuPayload)
@@ -66,6 +72,8 @@ class WebViewSessionManager(
     private val pool = ConcurrentHashMap<String, WebView>()
     private val pageStartTimestamps = ConcurrentHashMap<String, Long>()
     private val currentHostByTab = ConcurrentHashMap<String, String>()
+    private val earlyInjectedUrlByTab = ConcurrentHashMap<String, String>()
+    private val incognitoVisitedHosts = ConcurrentHashMap.newKeySet<String>()
     private var prewarmedWebView: WebView? = null
 
     @Volatile
@@ -136,9 +144,20 @@ class WebViewSessionManager(
 
     fun loadUrl(tabId: String, url: String, isIncognito: Boolean, isDesktopMode: Boolean, textZoomPercent: Int) {
         val webView = getOrCreateWebView(tabId, isIncognito, isDesktopMode, textZoomPercent)
-        currentHostByTab[tabId] = SwiftShieldEngine.normalizeHost(url)
+        syncCookiePolicyForActiveTab(isIncognito)
+        val normalizedHost = SwiftShieldEngine.normalizeHost(url)
+        currentHostByTab[tabId] = normalizedHost
+        if (isIncognito && normalizedHost.isNotBlank()) {
+            incognitoVisitedHosts.add(normalizedHost)
+        }
         pageStartTimestamps[tabId] = SystemClock.elapsedRealtime()
         webView.loadUrl(url)
+    }
+
+    fun syncCookiePolicyForActiveTab(isIncognito: Boolean) {
+        runCatching {
+            CookieManager.getInstance().setAcceptCookie(!isIncognito)
+        }
     }
 
     fun reload(tabId: String) {
@@ -311,10 +330,17 @@ class WebViewSessionManager(
 
     fun destroyTab(tabId: String) {
         currentHostByTab.remove(tabId)
+        earlyInjectedUrlByTab.remove(tabId)
         pageStartTimestamps.remove(tabId)
         pool.remove(tabId)?.let { wv ->
+            val wasIncognito = wv.tag == INCOGNITO_TAG
             (wv.parent as? ViewGroup)?.removeView(wv)
             wv.stopLoading()
+            if (wasIncognito) {
+                wv.clearCache(true)
+                wv.clearFormData()
+                wv.clearSslPreferences()
+            }
             wv.clearHistory()
             wv.destroy()
         }
@@ -322,8 +348,25 @@ class WebViewSessionManager(
 
     fun purgeIncognitoSessionData() {
         runCatching {
+            val hostsToPurge = incognitoVisitedHosts.toList()
+            incognitoVisitedHosts.clear()
+            val storage = WebStorage.getInstance()
+            hostsToPurge.forEach { host ->
+                storage.deleteOrigin("https://$host")
+                storage.deleteOrigin("http://$host")
+            }
             CookieManager.getInstance().removeSessionCookies(null)
             CookieManager.getInstance().flush()
+            @Suppress("DEPRECATION")
+            WebViewDatabase.getInstance(context).clearFormData()
+            WebViewDatabase.getInstance(context).clearHttpAuthUsernamePassword()
+            pool.values.filter { it.tag == INCOGNITO_TAG }.forEach { wv ->
+                wv.clearCache(true)
+                wv.clearFormData()
+                wv.clearHistory()
+                wv.clearSslPreferences()
+            }
+            CookieManager.getInstance().setAcceptCookie(true)
         }
     }
 
@@ -389,7 +432,20 @@ class WebViewSessionManager(
         s.javaScriptEnabled = prefs.javaScriptEnabled
         s.javaScriptCanOpenWindowsAutomatically = false
         s.setSupportMultipleWindows(true)
+        // Strict WebView security lockdown: block local filesystem & content provider access
+        s.allowFileAccess = false
+        s.allowContentAccess = false
+        @Suppress("DEPRECATION")
+        s.allowFileAccessFromFileURLs = false
+        @Suppress("DEPRECATION")
+        s.allowUniversalAccessFromFileURLs = false
+        @Suppress("DEPRECATION")
+        s.saveFormData = false
+        s.setGeolocationEnabled(false)
+
+        // Strict Incognito storage isolation
         s.domStorageEnabled = !isIncognito
+        @Suppress("DEPRECATION")
         s.databaseEnabled = !isIncognito
         s.cacheMode = when {
             isIncognito -> WebSettings.LOAD_NO_CACHE
@@ -400,11 +456,8 @@ class WebViewSessionManager(
         s.displayZoomControls = false
         s.setSupportZoom(true)
         s.textZoom = textZoomPercent.coerceIn(50, 200)
-        s.mixedContentMode = if (prefs.httpsOnlyMode) {
-            WebSettings.MIXED_CONTENT_NEVER_ALLOW
-        } else {
-            WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
-        }
+        // Block active mixed HTTP content inside HTTPS pages to prevent downgrade/MITM attacks
+        s.mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
         s.mediaPlaybackRequiresUserGesture = false
 
         // Image loading policy for speed / data saving
@@ -441,33 +494,50 @@ class WebViewSessionManager(
 
     @SuppressLint("JavascriptInterface")
     private fun attachClients(webView: WebView, tabId: String, isIncognito: Boolean) {
+        // Never attach the local password bridge inside Incognito tabs; require HTTPS origins
+        if (!isIncognito) {
+            webView.addJavascriptInterface(
+                object {
+                    @JavascriptInterface
+                    fun onPasswordFormDetected(pageUrl: String?) {
+                        val safeUrl = pageUrl.orEmpty()
+                        if (safeUrl.startsWith("https://", ignoreCase = true)) {
+                            webView.post { listener.onLoginFormDetected(tabId, safeUrl) }
+                        }
+                    }
+
+                    @JavascriptInterface
+                    fun onCredentialsSubmitted(originUrl: String?, username: String?, password: String?) {
+                        val safeUrl = originUrl.orEmpty()
+                        val safePass = password.orEmpty()
+                        if (safeUrl.startsWith("https://", ignoreCase = true) && safePass.length >= 2) {
+                            webView.post {
+                                listener.onLoginCredentialsCaptured(
+                                    tabId = tabId,
+                                    originUrl = safeUrl,
+                                    username = username.orEmpty().trim(),
+                                    password = safePass
+                                )
+                            }
+                        }
+                    }
+                },
+                PASSWORD_BRIDGE_NAME
+            )
+        }
+
+        // Non-privileged shield telemetry bridge (safe in both Standard & Incognito tabs)
         webView.addJavascriptInterface(
             object {
                 @JavascriptInterface
-                fun onPasswordFormDetected(pageUrl: String?) {
-                    val safeUrl = pageUrl.orEmpty()
-                    if (safeUrl.startsWith("http")) {
-                        webView.post { listener.onLoginFormDetected(tabId, safeUrl) }
-                    }
-                }
-
-                @JavascriptInterface
-                fun onCredentialsSubmitted(originUrl: String?, username: String?, password: String?) {
-                    val safeUrl = originUrl.orEmpty()
-                    val safePass = password.orEmpty()
-                    if (safeUrl.startsWith("http") && safePass.length >= 2) {
-                        webView.post {
-                            listener.onLoginCredentialsCaptured(
-                                tabId = tabId,
-                                originUrl = safeUrl,
-                                username = username.orEmpty().trim(),
-                                password = safePass
-                            )
-                        }
+                fun onAdBlocked(source: String?) {
+                    val safeSource = source?.take(64)?.ifBlank { "script-ad" } ?: "script-ad"
+                    webView.post {
+                        listener.onTrackerBlocked(tabId, "shield://$safeSource")
                     }
                 }
             },
-            PASSWORD_BRIDGE_NAME
+            SHIELD_BRIDGE_NAME
         )
 
         webView.setFindListener { activeMatchOrdinal, numberOfMatches, isDoneCounting ->
@@ -514,6 +584,14 @@ class WebViewSessionManager(
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView?, newProgress: Int) {
                 listener.onProgressChanged(tabId, newProgress)
+                // Early DOM injection right as initial document scripts parse (critical for YouTube SPA hooks)
+                val activeUrl = view?.url
+                if (newProgress >= 15 && !activeUrl.isNullOrBlank() && activeUrl.startsWith("http")) {
+                    if (earlyInjectedUrlByTab[tabId] != activeUrl) {
+                        earlyInjectedUrlByTab[tabId] = activeUrl
+                        injectShieldScripts(view, tabId, activeUrl)
+                    }
+                }
             }
 
             override fun onReceivedTitle(view: WebView?, title: String?) {
@@ -575,13 +653,17 @@ class WebViewSessionManager(
                 val uri = request?.url ?: return false
                 val rawUrl = uri.toString()
                 val scheme = uri.scheme?.lowercase().orEmpty()
-                if (scheme != "http" && scheme != "https" && scheme != "about" && scheme != "data") {
-                    // Safely block unknown intent/popup schemes
+                // Strictly allow only http/https navigation; block file://, content://, javascript:, intent://, data:
+                if (scheme != "http" && scheme != "https") {
                     return true
                 }
 
                 if (request.isForMainFrame) {
                     val pageHost = currentHostByTab[tabId]
+                    if (isIncognito) {
+                        val destHost = SwiftShieldEngine.normalizeHost(rawUrl)
+                        if (destHost.isNotBlank()) incognitoVisitedHosts.add(destHost)
+                    }
                     // Block popunder / ad-redirect hijacks on protected sites
                     if (shieldEngine.isPopupOrAdRedirect(rawUrl, pageHost)) {
                         listener.onPopupOrRedirectBlocked(tabId, rawUrl)
@@ -628,8 +710,12 @@ class WebViewSessionManager(
             override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
                 if (!url.isNullOrBlank()) {
                     currentHostByTab[tabId] = SwiftShieldEngine.normalizeHost(url)
+                    earlyInjectedUrlByTab.remove(tabId)
                     pageStartTimestamps[tabId] = SystemClock.elapsedRealtime()
                     listener.onPageStarted(tabId, url)
+                    if (url.startsWith("http")) {
+                        injectShieldScripts(view, tabId, url)
+                    }
                 }
             }
 
@@ -638,10 +724,9 @@ class WebViewSessionManager(
                 val startTime = pageStartTimestamps.remove(tabId)
                 val loadTimeMs = startTime?.let { (SystemClock.elapsedRealtime() - it).coerceAtLeast(1L) }
 
-                // Inject speed, cosmetic ad-hiding, and Force Dark optimizations cleanly
+                // Inject speed, YouTube video-ad shield, cosmetic ad-hiding, and Force Dark optimizations cleanly
                 if (view != null && finalUrl.startsWith("http")) {
                     val prefs = currentPrefs
-                    val pageHost = currentHostByTab[tabId]
                     val lazyImages = prefs.imageLoadingPolicy == ImageLoadingPolicy.LAZY_OPTIMIZED
                     if (lazyImages || prefs.cssPerfOptimizationEnabled || prefs.turboModeEnabled) {
                         view.evaluateJavascript(
@@ -653,15 +738,7 @@ class WebViewSessionManager(
                             null
                         )
                     }
-                    if (prefs.cosmeticBlockingEnabled && shieldEngine.isSiteProtected(pageHost)) {
-                        val cosmeticScript = RenderingOptimizerScripts.buildCosmeticBlockingScript(
-                            hideAds = prefs.blockAds,
-                            hideAnnoyances = prefs.blockAnnoyances
-                        )
-                        if (cosmeticScript.isNotEmpty()) {
-                            view.evaluateJavascript(cosmeticScript, null)
-                        }
-                    }
+                    injectShieldScripts(view, tabId, finalUrl)
                     if (prefs.forceDarkWebPages) {
                         view.evaluateJavascript(RenderingOptimizerScripts.buildForceDarkScript(true), null)
                     }
@@ -695,6 +772,49 @@ class WebViewSessionManager(
                 }
             }
 
+            override fun onReceivedSslError(
+                view: WebView?,
+                handler: SslErrorHandler?,
+                error: SslError?
+            ) {
+                // Fail-closed SSL certificate handling: NEVER call handler.proceed() on invalid certs
+                handler?.cancel()
+                val failingUrl = error?.url ?: view?.url.orEmpty()
+                val reason = when (error?.primaryError) {
+                    SslError.SSL_EXPIRED -> "This site's SSL security certificate has expired."
+                    SslError.SSL_IDMISMATCH -> "The security certificate does not match this website's domain name."
+                    SslError.SSL_UNTRUSTED -> "The certificate authority for this site is not trusted."
+                    SslError.SSL_NOTYETVALID -> "This site's security certificate is not yet valid."
+                    SslError.SSL_DATE_INVALID -> "The security certificate date is invalid."
+                    else -> "This website presented an invalid or unsafe SSL/TLS certificate."
+                }
+                listener.onSslCertificateError(tabId, failingUrl, reason)
+            }
+
+            override fun onSafeBrowsingHit(
+                view: WebView?,
+                request: WebResourceRequest?,
+                threatType: Int,
+                callback: SafeBrowsingResponse?
+            ) {
+                // Enforce Google Safe Browsing warning interstitial and threat reporting
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    callback?.showInterstitial(true)
+                }
+                val threatLabel = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+                    when (threatType) {
+                        SAFE_BROWSING_THREAT_PHISHING -> "Deceptive / Phishing Site"
+                        SAFE_BROWSING_THREAT_MALWARE -> "Malware Threat"
+                        SAFE_BROWSING_THREAT_UNWANTED_SOFTWARE -> "Unwanted Software"
+                        SAFE_BROWSING_THREAT_BILLING -> "Potentially Harmful Billing Site"
+                        else -> "Unsafe Website"
+                    }
+                } else {
+                    "Unsafe Website"
+                }
+                listener.onSafeBrowsingThreat(tabId, request?.url?.toString().orEmpty(), threatLabel)
+            }
+
             override fun onRenderProcessGone(
                 view: WebView?,
                 detail: RenderProcessGoneDetail?
@@ -702,6 +822,33 @@ class WebViewSessionManager(
                 destroyTab(tabId)
                 listener.onPageError(tabId, "Page renderer restarted. Tap reload to continue.")
                 return true
+            }
+        }
+    }
+
+    private fun injectShieldScripts(view: WebView?, tabId: String, pageUrl: String) {
+        if (view == null) return
+        val prefs = currentPrefs
+        val pageHost = currentHostByTab[tabId] ?: SwiftShieldEngine.normalizeHost(pageUrl)
+        if (!prefs.shieldEnabledGlobally || !shieldEngine.isSiteProtected(pageHost)) return
+
+        if (SwiftShieldEngine.isYouTubeHost(pageHost) && (prefs.blockAds || prefs.blockAnnoyances)) {
+            val ytScript = RenderingOptimizerScripts.buildYouTubeShieldScript(
+                hideAds = prefs.blockAds,
+                hideAnnoyances = prefs.blockAnnoyances
+            )
+            if (ytScript.isNotEmpty()) {
+                view.evaluateJavascript(ytScript, null)
+            }
+        }
+        if (prefs.cosmeticBlockingEnabled) {
+            val cosmeticScript = RenderingOptimizerScripts.buildCosmeticBlockingScript(
+                hideAds = prefs.blockAds,
+                hideAnnoyances = prefs.blockAnnoyances,
+                blockPopups = prefs.blockPopupsAndRedirects
+            )
+            if (cosmeticScript.isNotEmpty()) {
+                view.evaluateJavascript(cosmeticScript, null)
             }
         }
     }
@@ -715,6 +862,7 @@ class WebViewSessionManager(
 
     companion object {
         private const val PASSWORD_BRIDGE_NAME = "SwiftPasswordBridge"
+        private const val SHIELD_BRIDGE_NAME = "SwiftShieldBridge"
         private const val NORMAL_TAG = "normal"
         private const val INCOGNITO_TAG = "incognito"
         private const val DESKTOP_TAG_KEY = 0x5A010001

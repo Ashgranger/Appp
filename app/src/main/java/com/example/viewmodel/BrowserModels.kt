@@ -68,6 +68,8 @@ data class TabSession(
     val popupsBlockedCount: Int = 0,
     val hasError: Boolean = false,
     val errorDescription: String = "",
+    val isSecurityBlocked: Boolean = false,
+    val securityBlockTitle: String = "",
     val isReaderEligible: Boolean = false,
     val thumbnail: Bitmap? = null
 ) {

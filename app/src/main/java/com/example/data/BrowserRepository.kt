@@ -9,6 +9,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionSpec
+import okhttp3.CookieJar
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.util.UUID
@@ -34,9 +36,12 @@ class BrowserRepository(
 
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
+            .connectionSpecs(listOf(ConnectionSpec.MODERN_TLS))
+            .cookieJar(CookieJar.NO_COOKIES)
             .connectTimeout(12, TimeUnit.SECONDS)
             .readTimeout(20, TimeUnit.SECONDS)
             .followRedirects(true)
+            .followSslRedirects(false)
             .build()
     }
 
@@ -220,7 +225,9 @@ class BrowserRepository(
             if (respectWifiOnly && wifiOnlyEnabled && !isOnWifi()) {
                 return@withContext FilterUpdateSummary(0, 0, listOf("Skipped (Wi-Fi only enabled)"))
             }
-            val subs = filterDao.getSubscriptions().filter { it.isEnabled && it.sourceUrl.startsWith("http") }
+            val subs = filterDao.getSubscriptions().filter {
+                it.isEnabled && it.sourceUrl.startsWith("https://", ignoreCase = true)
+            }
             var updatedCount = 0
             var totalRules = 0
             val failed = mutableListOf<String>()

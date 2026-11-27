@@ -2,6 +2,8 @@ package com.example.engine
 
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import okhttp3.ConnectionSpec
+import okhttp3.CookieJar
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.w3c.dom.Element
@@ -76,10 +78,13 @@ data class NewsArticle(
  */
 class NewsFeedService(
     private val client: OkHttpClient = OkHttpClient.Builder()
+        .connectionSpecs(listOf(ConnectionSpec.MODERN_TLS))
+        .cookieJar(CookieJar.NO_COOKIES)
         .connectTimeout(5000, TimeUnit.MILLISECONDS)
         .readTimeout(6000, TimeUnit.MILLISECONDS)
         .callTimeout(8000, TimeUnit.MILLISECONDS)
         .followRedirects(true)
+        .followSslRedirects(false)
         .build()
 ) {
     private data class CachedFeed(
@@ -129,6 +134,7 @@ class NewsFeedService(
         defaultSource: String,
         maxItems: Int
     ): List<NewsArticle> {
+        if (!feedUrl.startsWith("https://", ignoreCase = true)) return emptyList()
         val request = Request.Builder()
             .url(feedUrl)
             .header("Accept", "application/rss+xml, application/xml, text/xml, */*")
